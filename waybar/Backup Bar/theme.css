@@ -1,0 +1,76 @@
+/* tokyonight_storm */
+
+@define-color black           #1d202f;
+@define-color red             #f7768e;
+@define-color green           #9ece6a;
+@define-color yellow          #e0af68;
+@define-color blue            #7aa2f7;
+@define-color magenta         #bb9af7;
+@define-color cyan            #7dcfff;
+@define-color white           #a9b1d6;
+/*@define-color rosewater       #;
+@define-color flamingo        #;
+@define-color pink            #;
+@define-color mauve           #;
+@define-color maroon          #;
+@define-color peach           #;
+@define-color teal            #;
+@define-color sky             #;
+@define-color sapphire        #;
+@define-color lavender        #;*/
+@define-color text            #c0caf5;
+/*@define-color subtext1        #;
+@define-color subtext0        #;*/
+@define-color overlay2        #7aa2f7;
+/*@define-color overlay1        #;
+@define-color overlay0        #;
+@define-color surface2        #;
+@define-color surface1        #;*/
+@define-color surface0        #414868;
+@define-color base            #24283b;
+@define-color mantle          #414868;
+@define-color crust           #24283b;
+
+/* 
+  bg - background
+  fg - foreground
+  br - border
+*/
+
+/* Main Colors */
+
+@define-color shadow          shade(@crust, 0.5);
+@define-color main-fg         @text;
+@define-color main-bg         @crust;
+@define-color main-br         @text;
+
+@define-color active-bg       @overlay2;
+@define-color active-fg       @crust;
+
+@define-color hover-bg        @black;
+@define-color hover-fg        alpha(@text, 0.75);
+
+/* Module Colors */
+
+@define-color module-fg       @text;
+@define-color workspaces      @mantle;
+
+@define-color temperature     @mantle;
+@define-color memory          @base;
+@define-color cpu             @surface0;
+@define-color distro-fg       @black;
+@define-color distro-bg       @overlay2;
+@define-color time            @surface0;
+@define-color date            @base;
+@define-color tray            @mantle;
+
+@define-color pulseaudio      @mantle;
+@define-color backlight       @base;
+@define-color battery         @surface0;
+@define-color power           @overlay2;
+
+/* State Colors */
+
+@define-color warning         @yellow;
+@define-color critical        @red;
+@define-color charging        @text;

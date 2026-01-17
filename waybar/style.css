@@ -1,0 +1,312 @@
+@import "theme.css";
+
+/* ───────────────────────────────────────────────────────────────┤ global ├───
+*/
+* {
+  min-height: 0;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+/* ───────────────────────────────────────────────────────────┤ background ├───
+*/
+window#waybar {
+  background: @bg_trans;
+  margin: 2px;
+}
+
+/* ─────────────────────────────────────────────────────────────┤ tooltips ├───
+*/
+tooltip {
+  
+  border: 1.5px solid @borders;
+}
+
+tooltip label {
+  color: @text_color;
+  margin: -1.5px 3px;
+}
+
+/* ──────────────────────────────────────────────────────────────┤ general ├───
+*/
+#custom-theme,
+#workspaces,
+#window,
+#custom-temperature,
+#memory,
+#cpu,
+#idle_inhibitor,
+#clock,
+#custom-wifi,
+#bluetooth,
+#custom-update,
+#mpris,
+#pulseaudio,
+#custom-notifications,
+#custom-wlsunset,
+#custom-power {
+  opacity: 1;
+  color: @fg_color;
+  padding: 0 4px;
+}
+/* ───────────────────────────────────────────────────────────┤ workspaces ├───
+*/
+#workspaces {
+}
+
+#workspaces button {
+  color: @fg_color;
+  border: 1px hidden;
+  box-shadow: none;
+  border-radius: 0;
+  margin: 0px;
+  padding: 0 2px;
+  transition: none;
+}
+
+#workspaces button:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color;
+  text-shadow: none;
+}
+
+#workspaces button.focused {
+  color: @selected_fg_color;
+  background: @color4;
+  border: 1px hidden;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 0 2px 1px rgba(0, 0, 0, 0.1);
+  margin: 0px;
+  padding: 0 6px;
+}
+/* ──────────────────────────────────────────────────────────┤ temperature ├───
+*/
+#custom-temperature {
+  
+  padding: 0 0 0 1px;
+}
+
+/* ───────────────────────────────────────────────────────────────┤ memory ├───
+*/
+#memory {
+  
+  padding: 0 0 0 1px;
+}
+
+#memory.warning {
+  color: @warning_color;
+}
+
+#memory.critical {
+  color: @error_color;
+}
+
+/* ──────────────────────────────────────────────────────────────────┤ cpu ├───
+*/
+#cpu {
+  
+}
+
+
+/* ──────────────────────────────────────────────────────────┤ distro icon ├───
+*/
+#custom-distro {
+  color: @color4; 
+  margin: 0 -1px -2px 0;
+  padding: 0 3px 0 4px;
+  text-shadow: 0 0 1.5px rgba(0, 0, 0, 1);
+}
+
+
+/* ─────────────────────────────────────────────────────────────────┤ time ├───
+*/
+#idle_inhibitor {
+  
+  padding: 0 0 0 4px;
+}
+
+#idle_inhibitor:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color;
+}
+
+#clock.time {
+  background: @time;
+  margin-left: -2px;
+  padding: 0 3px 0 0;
+}
+/* ─────────────────────────────────────────────────────────────────┤ date ├───
+*/
+#clock.date {
+  
+}
+
+#clock.date:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color;
+}
+/* ────────────────────────────────────────────────────────────────┤ wi-fi ├───
+*/
+#custom-wifi {
+  
+  padding: 0 8px 0 5px;
+}
+
+#custom-wifi:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color; 
+}
+
+/* ────────────────────────────────────────────────────────────┤ bluetooth ├───
+*/
+#bluetooth {
+  
+  padding-right: 5px;
+}
+
+#bluetooth:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color; 
+}
+
+/* ────────────────────────────────────────────────────────┤ system update ├───
+*/
+#custom-update {
+  padding-right: 7px;
+  
+}
+
+#custom-update:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color; 
+}
+/* ───────────────────────────────────────────────────────────┤ media info ├───
+*/
+#mpris {
+  
+  padding: 0 8px 0;
+}
+
+#mpris:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color; 
+}
+
+/* ────────────────────────────────────────────────────────┤ output device ├───
+*/
+#pulseaudio {
+  
+}
+
+#pulseaudio:hover {
+  color: @selected_fg_color;
+  background: @selected_bg_color;
+}
+/* ─────────────────────────────────────────────────────────┤ notifications ├───
+*/
+
+#custom-notifications {
+  color: @fg_color;
+  border-radius: 0;
+  border: 1px hidden;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
+  margin: 0px 4px 0px 0;
+  padding: 0 2px 0 6px;
+}
+
+#custom-notifications:hover {
+  color: @selected_fg_color;
+  border: 1px hidden;
+  background: @selected_bg_color;
+  text-shadow: none;
+  box-shadow: none;
+}
+/* ─────────────────────────────────────────────────────────┤ night light ├───
+*/
+
+#custom-wlsunset {
+  color: @fg_color;
+  border-radius: 0;
+  border: 1px hidden;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
+  margin: 0px 3px 0px 0;
+  padding: 0 2px 0 6px;
+}
+
+#custom-wlsunset:hover {
+  color: @selected_fg_color;
+  border: 1px hidden;
+  background: @selected_bg_color;
+  text-shadow: none;
+  box-shadow: none;
+}
+
+/* ─────────────────────────────────────────────────────────┤ power button ├───
+*/
+#custom-power {
+  color: @fg_color;
+  border-radius: 0;
+  border: 1px hidden;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
+  margin: 0px 4px 0px 0;
+  padding: 0 6px 0 9px;
+}
+
+#custom-power:hover {
+  color: @selected_fg_color;
+  border: 1px hidden;
+  background: @selected_bg_color;
+  text-shadow: none;
+  box-shadow: none;
+}
+
+/* ───────────────────────────────────────────────────────────┤ font sizes ├───
+*/
+/*
+  NOTE: Be careful when changing font sizes, as they can affect alignment.
+
+  Try adjusting whole numbers first, then refine with decimals.
+
+  If you increase or decrease a value, make the same change to all properties
+  in this section to keep the layout consistent.
+*/
+
+* {
+  font-family: "JetBrainsMono Nerd Font";
+  font-size: 10px;
+  font-weight: bold;
+}
+
+tooltip label,
+#window label,
+#mpris {
+  font-weight: normal;
+}
+/* ──────────────────────────────────────────────────────────┤ distro icon ├───
+*/
+#custom-distro {
+  font-size: 14.6px;
+}
+/*
+  Adjust these properties as well to keep the design consistent.
+*/
+
+/* ───────────────────────────────────────────────────────────┤ workspaces ├───
+*/
+#workspaces button {
+  padding: 0 2px;
+}
+#workspaces button.focused {
+  padding: 0 6px;
+}
+/* ───────────────────────────────────────────────────────────┤ night light ├───
+*/
+#custom-wlsunset {
+  font-size: 13;
+  font-weight: bold;
+}
+/* ─────────────────────────────────────────────────────────┤ power button ├───
+*/
+#custom-power {
+  padding: 0 6px 0 9px;
+}
