@@ -1,0 +1,22 @@
+{
+	"all": {
+		"changeLogs": {
+			"BDFDB": "4.4.3",
+			"PinDMs": "2.0.7"
+		},
+		"choices": {
+			"toastPosition": "right"
+		},
+		"general": {
+			"shareData": true,
+			"showToasts": true,
+			"checkForUpdates": false,
+			"showSupportBadges": false,
+			"useChromium": false
+		},
+		"hashes": {
+			"0BDFDB.data.json": "57c2fcc473eb40714c5c0ebb365cd70d5b0f0cf7",
+			"0BDFDB.raw.css": "b204f8d3ab7090c27feeabf93286b9f634ddfe2e"
+		}
+	}
+}

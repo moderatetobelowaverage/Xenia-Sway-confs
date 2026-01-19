@@ -1,0 +1,21941 @@
+/**
+ * @name Pluralchum
+ * @version 2.7.3
+ * @description PluralKit integration for BetterDiscord. Inexplicably Homestuck-themed.
+ * @author Ash Taylor
+ *
+ */
+
+'use strict';
+
+var require$$0 = BdApi.React;
+
+var styles = ".plugin-inputs.collapsible {\n  overflow: visible;\n}\n\n.plugin-inputs.collapsible.collapsed {\n  overflow: hidden;\n}\n\n.pk-name:hover .pk-name-segment {\n  cursor: pointer;\n  text-decoration: underline;\n}\n\n.pk-hidden {\n  visibility: hidden;\n  display: inline;\n  position: absolute;\n  width: 0px;\n}\n\n.pk-hidden * {\n  display: inline-block;\n  width: 0px;\n}\n";
+
+let css = document.createElement('style');
+css.id = 'PluralchumCSS';
+css.innerHTML = styles;
+document.head.append(css);
+
+const React$f = BdApi.React;
+class ValueCell {
+  #val;
+  #listeners = [];
+  constructor(val) {
+    this.#val = val;
+  }
+  get() {
+    return this.#val;
+  }
+  set(x) {
+    this.update(function () {
+      return x;
+    });
+  }
+  update(f) {
+    let old = this.#val;
+    let current = f(old);
+    this.#val = current;
+    if (old !== current) {
+      this.#listeners.forEach(function (listener) {
+        listener(current);
+      });
+    }
+  }
+  addListener(f) {
+    this.#listeners.push(f);
+
+    // removeListener function
+    return function () {
+      let index = this.#listeners.indexOf(f);
+      this.#listeners.splice(index, 1);
+    }.bind(this);
+  }
+}
+class MapCell {
+  #map;
+  #listeners = [];
+  constructor(map) {
+    this.#map = map;
+  }
+  get(key) {
+    if (Object.hasOwn(this.#map, key)) {
+      return this.#map[key];
+    } else {
+      return null;
+    }
+  }
+  set(key, value) {
+    this.update(key, function () {
+      return value;
+    });
+  }
+  entries() {
+    return Object.entries(this.#map);
+  }
+  update(key, f) {
+    let old = this.get(key);
+    let current = f(old);
+    this.#map[key] = current;
+    if (old !== current) {
+      this.#listeners.forEach(function (listener) {
+        listener(key, current);
+      });
+    }
+  }
+  addListener(f) {
+    this.#listeners.push(f);
+
+    // removeListener function
+    return function () {
+      let index = this.#listeners.indexOf(f);
+      this.#listeners.splice(index, 1);
+    }.bind(this);
+  }
+  delete(key) {
+    delete this.#map[key];
+    this.#listeners.forEach(function (listener) {
+      listener(key, null);
+    });
+  }
+  clear() {
+    this.#map = {};
+    this.#listeners.forEach(function (listener) {
+      listener(null, null);
+    });
+  }
+}
+function hookupValueCell(cell) {
+  const [value, setValue] = React$f.useState(cell.get());
+  React$f.useEffect(function () {
+    return cell.addListener(setValue);
+  });
+  return [value, setValue];
+}
+function isProxiedMessage(message) {
+  return message.webhookId !== null;
+}
+async function sleep(timeout) {
+  return new Promise(resolve => setTimeout(resolve, timeout));
+}
+const pluginName = 'Pluralchum';
+
+const React$e = BdApi.React;
+const ProfileStatus = {
+  Done: 'DONE',
+  Updating: 'UPDATING',
+  Requesting: 'REQUESTING',
+  NotPK: 'NOT_PK',
+  Stale: 'STALE'
+};
+const baseEndpoint = 'https://api.pluralkit.me/v2';
+const userAgent = 'PLURALCHUM (github.com/estroBiologist/pluralchum)';
+const delayPerRequest = 600;
+let currentRequests = -1;
+async function httpGetAsync(url) {
+  currentRequests += 1;
+  await sleep(currentRequests * delayPerRequest);
+  let headers = new Headers({
+    'User-Agent': userAgent
+  });
+  let response = await fetch(url, {
+    headers
+  });
+  currentRequests -= 1;
+  return response;
+}
+function pkDataToProfile(data) {
+  let profile = {
+    name: data.member.name,
+    color: '#' + data.member.color,
+    tag: data.system.tag,
+    id: data.member.id,
+    system: data.system.id,
+    status: ProfileStatus.Done,
+    system_color: '#' + data.system.color,
+    sender: data.sender,
+    description: data.member.description ?? '',
+    system_description: data.system.description ?? '',
+    avatar: data.member.avatar_url ?? data.system.avatar_url,
+    banner: data.member.banner,
+    system_name: data.system.name,
+    pronouns: data.member.pronouns
+  };
+  if (data.member.color === null) profile.color = '';
+  if (data.system.color === null) profile.system_color = '';
+  if (data.member.display_name) {
+    profile.name = data.member.display_name;
+  }
+  if (data.member.pronouns === null) profile.pronouns = '';
+  return profile;
+}
+async function pkResponseToProfile(response) {
+  if (response.status == 200) {
+    console.log('RESPONSE');
+    let data = await response.json();
+    console.log(data);
+    if (data.system == null && data.member == null) return {
+      status: ProfileStatus.NotPK
+    };
+    return pkDataToProfile(data);
+  } else if (response.status == 404) {
+    return {
+      status: ProfileStatus.NotPK
+    };
+  }
+}
+async function getFreshProfile(message) {
+  let profileResponse = await httpGetAsync(`${baseEndpoint}/messages/${message.id}`);
+  return await pkResponseToProfile(profileResponse);
+}
+async function updateFreshProfile(message, hash, profileMap) {
+  profileMap.update(hash, function (profile) {
+    if (profile !== null) {
+      profile.status = ProfileStatus.Updating;
+      return profile;
+    } else {
+      return {
+        status: ProfileStatus.Requesting
+      };
+    }
+  });
+  let profile = await getFreshProfile(message);
+  profileMap.set(hash, profile);
+}
+function hashCode(text) {
+  var hash = 0;
+  for (var i = 0; i < text.length; i++) {
+    var char = text.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return hash;
+}
+function getUserHash(author) {
+  let username = author.username;
+  if (Object.hasOwn(author, 'username_real')) username = author.username_real;
+  return hashCode(username + author.avatar);
+}
+function shouldUpdate(profile) {
+  return !profile || profile.status === ProfileStatus.Stale;
+}
+async function updateProfile(message, profileMap) {
+  if (!isProxiedMessage(message)) return null;
+  let username = message.author.username;
+  if (Object.hasOwn(message.author, 'username_real')) username = message.author.username_real;
+  let userHash = getUserHash(message.author);
+  let profile = profileMap.get(userHash);
+  if (shouldUpdate(profile)) {
+    console.log(`[PLURALCHUM] Requesting data for ${username} (${userHash})`);
+    try {
+      await updateFreshProfile(message, userHash, profileMap);
+    } catch (e) {
+      console.log(`[PLURALCHUM] Error while requesting data for ${username} (${userHash}): ${e}`);
+    }
+  }
+}
+function hookupProfile(profileMap, author) {
+  let userHash = getUserHash(author);
+  const [profile, setProfile] = React$e.useState(profileMap.get(userHash));
+  React$e.useEffect(function () {
+    return profileMap.addListener(function (key, value) {
+      if (key === userHash) {
+        setProfile(value);
+      }
+    });
+  });
+  return [profile, setProfile];
+}
+
+const ColourPreference = {
+  Member: 0,
+  System: 1,
+  Theme: 2,
+  // (do nothing)
+  Role: 3
+};
+function defaultSettings() {
+  return {
+    eula: false,
+    doColourText: true,
+    contrastTestColour: '#000000',
+    doContrastTest: true,
+    contrastThreshold: 3,
+    memberColourPref: ColourPreference.Member,
+    tagColourPref: ColourPreference.System,
+    useServerNames: true,
+    version: null,
+    doDisableBanners: false
+  };
+}
+function loadSettings() {
+  let settings = Object.assign(defaultSettings(), BdApi.Data.load(pluginName, 'settings'));
+  BdApi.Data.save(pluginName, 'settings', settings);
+  return settings;
+}
+function initializeSettings() {
+  let settings = new ValueCell(loadSettings());
+  settings.addListener(function (s) {
+    BdApi.Data.save(pluginName, 'settings', s);
+  });
+  return settings;
+}
+function filterDoneProfiles(entries) {
+  const filtered = entries.filter(([_, profile]) => profile.status === ProfileStatus.Done);
+  return Object.fromEntries(filtered);
+}
+function initializeProfileMap() {
+  const key = 'profileMap';
+  let map = new MapCell(BdApi.Data.load(pluginName, key) ?? {});
+  map.addListener(function () {
+    BdApi.Data.save(pluginName, key, filterDoneProfiles(map.entries()));
+  });
+  return map;
+}
+function tooOld(lastUsed) {
+  const expirationTime = 1000 * 60 * 60 * 24 * 30;
+  return Date.now() - lastUsed > expirationTime;
+}
+function purgeOldProfiles(profileMap) {
+  if (!profileMap) return;
+  for (const [id, profile] of profileMap.entries()) {
+    if (Object.hasOwn(profile, 'lastUsed')) {
+      if (tooOld(profile.lastUsed)) {
+        profileMap.delete(id);
+      }
+    } else {
+      profileMap.update(id, function () {
+        return {
+          ...profile,
+          lastUsed: Date.now()
+        };
+      });
+    }
+  }
+}
+
+const React$d = BdApi.React;
+function headsUp(onConfirm, onCancel) {
+  BdApi.UI.showConfirmationModal('Heads up!', /*#__PURE__*/React$d.createElement("div", {
+    style: {
+      color: 'var(--text-normal)',
+      'text-align': 'center'
+    }
+  }, "This plugin uses the PluralKit API to fetch system and member data. ", /*#__PURE__*/React$d.createElement("br", null), /*#__PURE__*/React$d.createElement("br", null), "Because of technical limitations, this data is cached on your computer between sessions. None of this data is ever shared, collected or uploaded, but you still ought to know.", /*#__PURE__*/React$d.createElement("br", null), /*#__PURE__*/React$d.createElement("br", null), /*#__PURE__*/React$d.createElement("b", null, "You can clear this cache at any time in the plugin settings"), ", and unused cache data is automatically deleted after 30 days."), {
+    confirmText: 'Gotcha',
+    cancelText: 'No thanks',
+    onConfirm,
+    onCancel
+  });
+}
+function requireEula(settings) {
+  if (!settings.get().eula) {
+    let onConfirm = function () {
+      settings.update(function (s) {
+        return {
+          ...s,
+          eula: true
+        };
+      });
+    };
+    let onCancel = function () {
+      BdApi.Plugins.disable(pluginName);
+    };
+    headsUp(onConfirm, onCancel);
+  }
+}
+
+function luminance(r, g, b) {
+  var a = [r, g, b].map(function (v) {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722;
+}
+function contrast(rgb1, rgb2) {
+  var lum1 = luminance(rgb1.r, rgb1.g, rgb1.b);
+  var lum2 = luminance(rgb2.r, rgb2.g, rgb2.b);
+  var brightest = Math.max(lum1, lum2);
+  var darkest = Math.min(lum1, lum2);
+  return (brightest + 0.05) / (darkest + 0.05);
+}
+function hexToRgb(hex) {
+  // Expand shorthand form (e.g. "03F") to full form (e.g. "0033FF"	)
+  var shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+  hex = hex.replace(shorthandRegex, function (m, r, g, b) {
+    return r + r + g + g + b + b;
+  });
+  var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? {
+    r: parseInt(result[1], 16),
+    g: parseInt(result[2], 16),
+    b: parseInt(result[3], 16)
+  } : null;
+}
+function acceptableContrast(colour, doContrastTest, contrastTestColour, contrastThreshold) {
+  let textContrast = contrast(hexToRgb(colour), hexToRgb(contrastTestColour));
+  return !doContrastTest || textContrast >= contrastThreshold;
+}
+
+// se: Each formatted element gets a separate entry in the array ret.props.children[0].
+// Some of the new elements (specifically headers) have a .markup-XXXXXX h<x> class defined.
+// These classes have a set color, and this overrides the element style on the top level message content element.
+// So, we iterate over message elements that have their own props field, and add the color, item by item.
+// But also plain text in a message *doesn't* have props, so we still have to set ret.props.style for that.
+// Waugh.
+// Making a list of the specific markup types that don't format correctly,
+// Because if we just do this to all formatting, that overrides the URL color too.
+function colorMarkupElements(originalMessageElements, color) {
+  let messageElements = [];
+  const MarkupTypes = ['h1', 'h2', 'h3'];
+  for (const element of originalMessageElements) {
+    if (MarkupTypes.includes(element.type)) {
+      messageElements.push({
+        ...element,
+        props: {
+          ...element.props,
+          style: {
+            color
+          }
+        }
+      });
+    } else {
+      messageElements.push(element);
+    }
+  }
+  return messageElements;
+}
+function ColorMessageContent({
+  messageContent,
+  color
+}) {
+  let elements = colorMarkupElements(messageContent.props.children[0], color);
+  return {
+    ...messageContent,
+    props: {
+      ...messageContent.props,
+      style: {
+        color
+      },
+      children: [elements]
+    }
+  };
+}
+
+const React$c = BdApi.React;
+function shouldColor(settings, profile) {
+  let {
+    doContrastTest,
+    contrastTestColour,
+    contrastThreshold
+  } = settings;
+  return settings.doColourText && profile && (profile.status === ProfileStatus.Done || profile.status === ProfileStatus.Updating) && profile.color && acceptableContrast(profile.color, doContrastTest, contrastTestColour, contrastThreshold);
+}
+function MessageContentProxy({
+  settingsCell,
+  profileMap,
+  enabledCell,
+  messageContent,
+  message
+}) {
+  let [settings] = hookupValueCell(settingsCell);
+  let [profile] = hookupProfile(profileMap, message.author);
+  let [enabled] = hookupValueCell(enabledCell);
+  if (!enabled || !isProxiedMessage(message)) {
+    return messageContent;
+  }
+  updateProfile(message, profileMap);
+  if (shouldColor(settings, profile)) {
+    return /*#__PURE__*/React$c.createElement(ColorMessageContent, {
+      color: profile.color,
+      messageContent: messageContent
+    });
+  } else {
+    return messageContent;
+  }
+}
+
+var unicode_map = [{
+  expected: "🧑🏻‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏻‍❤️‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏻‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏻‍❤️‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏻‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏻‍❤️‍💋‍🧑🏾"
+}, {
+  expected: "🧑🏻‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏻‍❤️‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏼‍❤️‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏼‍❤️‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏼‍❤️‍💋‍🧑🏾"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏼‍❤️‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏽‍❤️‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏽‍❤️‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏽‍❤️‍💋‍🧑🏾"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏽‍❤️‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏾‍❤️‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏾‍❤️‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏾‍❤️‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏾‍❤️‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏿‍❤️‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏿‍❤️‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏿‍❤️‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏿‍❤️‍💋‍🧑🏾"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏻",
+  actual: "👩🏻‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏼",
+  actual: "👩🏻‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏽",
+  actual: "👩🏻‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏾",
+  actual: "👩🏻‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏿",
+  actual: "👩🏻‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏻",
+  actual: "👩🏼‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏼",
+  actual: "👩🏼‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏽",
+  actual: "👩🏼‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏾",
+  actual: "👩🏼‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏿",
+  actual: "👩🏼‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏻",
+  actual: "👩🏽‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏼",
+  actual: "👩🏽‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏽",
+  actual: "👩🏽‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏾",
+  actual: "👩🏽‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏿",
+  actual: "👩🏽‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏻",
+  actual: "👩🏾‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏼",
+  actual: "👩🏾‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏽",
+  actual: "👩🏾‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏾",
+  actual: "👩🏾‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏿",
+  actual: "👩🏾‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏻",
+  actual: "👩🏿‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏼",
+  actual: "👩🏿‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏽",
+  actual: "👩🏿‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏾",
+  actual: "👩🏿‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏿",
+  actual: "👩🏿‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏻",
+  actual: "👨🏻‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏼",
+  actual: "👨🏻‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏽",
+  actual: "👨🏻‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏾",
+  actual: "👨🏻‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏿",
+  actual: "👨🏻‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏻",
+  actual: "👨🏼‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏼",
+  actual: "👨🏼‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏽",
+  actual: "👨🏼‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏾",
+  actual: "👨🏼‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏿",
+  actual: "👨🏼‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏻",
+  actual: "👨🏽‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏼",
+  actual: "👨🏽‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏽",
+  actual: "👨🏽‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏾",
+  actual: "👨🏽‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏿",
+  actual: "👨🏽‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏻",
+  actual: "👨🏾‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏼",
+  actual: "👨🏾‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏽",
+  actual: "👨🏾‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏾",
+  actual: "👨🏾‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏿",
+  actual: "👨🏾‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏻",
+  actual: "👨🏿‍❤️‍💋‍👨🏻"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏼",
+  actual: "👨🏿‍❤️‍💋‍👨🏼"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏽",
+  actual: "👨🏿‍❤️‍💋‍👨🏽"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏾",
+  actual: "👨🏿‍❤️‍💋‍👨🏾"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏿",
+  actual: "👨🏿‍❤️‍💋‍👨🏿"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏻",
+  actual: "👩🏻‍❤️‍💋‍👩🏻"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏼",
+  actual: "👩🏻‍❤️‍💋‍👩🏼"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏽",
+  actual: "👩🏻‍❤️‍💋‍👩🏽"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏾",
+  actual: "👩🏻‍❤️‍💋‍👩🏾"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏿",
+  actual: "👩🏻‍❤️‍💋‍👩🏿"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏻",
+  actual: "👩🏼‍❤️‍💋‍👩🏻"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏼",
+  actual: "👩🏼‍❤️‍💋‍👩🏼"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏽",
+  actual: "👩🏼‍❤️‍💋‍👩🏽"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏾",
+  actual: "👩🏼‍❤️‍💋‍👩🏾"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏿",
+  actual: "👩🏼‍❤️‍💋‍👩🏿"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏻",
+  actual: "👩🏽‍❤️‍💋‍👩🏻"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏼",
+  actual: "👩🏽‍❤️‍💋‍👩🏼"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏽",
+  actual: "👩🏽‍❤️‍💋‍👩🏽"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏾",
+  actual: "👩🏽‍❤️‍💋‍👩🏾"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏿",
+  actual: "👩🏽‍❤️‍💋‍👩🏿"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏻",
+  actual: "👩🏾‍❤️‍💋‍👩🏻"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏼",
+  actual: "👩🏾‍❤️‍💋‍👩🏼"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏽",
+  actual: "👩🏾‍❤️‍💋‍👩🏽"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏾",
+  actual: "👩🏾‍❤️‍💋‍👩🏾"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏿",
+  actual: "👩🏾‍❤️‍💋‍👩🏿"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏻",
+  actual: "👩🏿‍❤️‍💋‍👩🏻"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏼",
+  actual: "👩🏿‍❤️‍💋‍👩🏼"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏽",
+  actual: "👩🏿‍❤️‍💋‍👩🏽"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏾",
+  actual: "👩🏿‍❤️‍💋‍👩🏾"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏿",
+  actual: "👩🏿‍❤️‍💋‍👩🏿"
+}, {
+  expected: "🧑🏻‍❤‍💋‍🧑🏼",
+  actual: "🧑🏻‍❤‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏻‍❤‍💋‍🧑🏽",
+  actual: "🧑🏻‍❤‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏻‍❤‍💋‍🧑🏾",
+  actual: "🧑🏻‍❤‍💋‍🧑🏾"
+}, {
+  expected: "🧑🏻‍❤‍💋‍🧑🏿",
+  actual: "🧑🏻‍❤‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏼‍❤‍💋‍🧑🏻",
+  actual: "🧑🏼‍❤‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏼‍❤‍💋‍🧑🏽",
+  actual: "🧑🏼‍❤‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏼‍❤‍💋‍🧑🏾",
+  actual: "🧑🏼‍❤‍💋‍🧑🏾"
+}, {
+  expected: "🧑🏼‍❤‍💋‍🧑🏿",
+  actual: "🧑🏼‍❤‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏽‍❤‍💋‍🧑🏻",
+  actual: "🧑🏽‍❤‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏽‍❤‍💋‍🧑🏼",
+  actual: "🧑🏽‍❤‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏽‍❤‍💋‍🧑🏾",
+  actual: "🧑🏽‍❤‍💋‍🧑🏾"
+}, {
+  expected: "🧑🏽‍❤‍💋‍🧑🏿",
+  actual: "🧑🏽‍❤‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏾‍❤‍💋‍🧑🏻",
+  actual: "🧑🏾‍❤‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏾‍❤‍💋‍🧑🏼",
+  actual: "🧑🏾‍❤‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏾‍❤‍💋‍🧑🏽",
+  actual: "🧑🏾‍❤‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏾‍❤‍💋‍🧑🏿",
+  actual: "🧑🏾‍❤‍💋‍🧑🏿"
+}, {
+  expected: "🧑🏿‍❤‍💋‍🧑🏻",
+  actual: "🧑🏿‍❤‍💋‍🧑🏻"
+}, {
+  expected: "🧑🏿‍❤‍💋‍🧑🏼",
+  actual: "🧑🏿‍❤‍💋‍🧑🏼"
+}, {
+  expected: "🧑🏿‍❤‍💋‍🧑🏽",
+  actual: "🧑🏿‍❤‍💋‍🧑🏽"
+}, {
+  expected: "🧑🏿‍❤‍💋‍🧑🏾",
+  actual: "🧑🏿‍❤‍💋‍🧑🏾"
+}, {
+  expected: "👩🏻‍❤‍💋‍👨🏻",
+  actual: "👩🏻‍❤‍💋‍👨🏻"
+}, {
+  expected: "👩🏻‍❤‍💋‍👨🏼",
+  actual: "👩🏻‍❤‍💋‍👨🏼"
+}, {
+  expected: "👩🏻‍❤‍💋‍👨🏽",
+  actual: "👩🏻‍❤‍💋‍👨🏽"
+}, {
+  expected: "👩🏻‍❤‍💋‍👨🏾",
+  actual: "👩🏻‍❤‍💋‍👨🏾"
+}, {
+  expected: "👩🏻‍❤‍💋‍👨🏿",
+  actual: "👩🏻‍❤‍💋‍👨🏿"
+}, {
+  expected: "👩🏼‍❤‍💋‍👨🏻",
+  actual: "👩🏼‍❤‍💋‍👨🏻"
+}, {
+  expected: "👩🏼‍❤‍💋‍👨🏼",
+  actual: "👩🏼‍❤‍💋‍👨🏼"
+}, {
+  expected: "👩🏼‍❤‍💋‍👨🏽",
+  actual: "👩🏼‍❤‍💋‍👨🏽"
+}, {
+  expected: "👩🏼‍❤‍💋‍👨🏾",
+  actual: "👩🏼‍❤‍💋‍👨🏾"
+}, {
+  expected: "👩🏼‍❤‍💋‍👨🏿",
+  actual: "👩🏼‍❤‍💋‍👨🏿"
+}, {
+  expected: "👩🏽‍❤‍💋‍👨🏻",
+  actual: "👩🏽‍❤‍💋‍👨🏻"
+}, {
+  expected: "👩🏽‍❤‍💋‍👨🏼",
+  actual: "👩🏽‍❤‍💋‍👨🏼"
+}, {
+  expected: "👩🏽‍❤‍💋‍👨🏽",
+  actual: "👩🏽‍❤‍💋‍👨🏽"
+}, {
+  expected: "👩🏽‍❤‍💋‍👨🏾",
+  actual: "👩🏽‍❤‍💋‍👨🏾"
+}, {
+  expected: "👩🏽‍❤‍💋‍👨🏿",
+  actual: "👩🏽‍❤‍💋‍👨🏿"
+}, {
+  expected: "👩🏾‍❤‍💋‍👨🏻",
+  actual: "👩🏾‍❤‍💋‍👨🏻"
+}, {
+  expected: "👩🏾‍❤‍💋‍👨🏼",
+  actual: "👩🏾‍❤‍💋‍👨🏼"
+}, {
+  expected: "👩🏾‍❤‍💋‍👨🏽",
+  actual: "👩🏾‍❤‍💋‍👨🏽"
+}, {
+  expected: "👩🏾‍❤‍💋‍👨🏾",
+  actual: "👩🏾‍❤‍💋‍👨🏾"
+}, {
+  expected: "👩🏾‍❤‍💋‍👨🏿",
+  actual: "👩🏾‍❤‍💋‍👨🏿"
+}, {
+  expected: "👩🏿‍❤‍💋‍👨🏻",
+  actual: "👩🏿‍❤‍💋‍👨🏻"
+}, {
+  expected: "👩🏿‍❤‍💋‍👨🏼",
+  actual: "👩🏿‍❤‍💋‍👨🏼"
+}, {
+  expected: "👩🏿‍❤‍💋‍👨🏽",
+  actual: "👩🏿‍❤‍💋‍👨🏽"
+}, {
+  expected: "👩🏿‍❤‍💋‍👨🏾",
+  actual: "👩🏿‍❤‍💋‍👨🏾"
+}, {
+  expected: "👩🏿‍❤‍💋‍👨🏿",
+  actual: "👩🏿‍❤‍💋‍👨🏿"
+}, {
+  expected: "👨🏻‍❤‍💋‍👨🏻",
+  actual: "👨🏻‍❤‍💋‍👨🏻"
+}, {
+  expected: "👨🏻‍❤‍💋‍👨🏼",
+  actual: "👨🏻‍❤‍💋‍👨🏼"
+}, {
+  expected: "👨🏻‍❤‍💋‍👨🏽",
+  actual: "👨🏻‍❤‍💋‍👨🏽"
+}, {
+  expected: "👨🏻‍❤‍💋‍👨🏾",
+  actual: "👨🏻‍❤‍💋‍👨🏾"
+}, {
+  expected: "👨🏻‍❤‍💋‍👨🏿",
+  actual: "👨🏻‍❤‍💋‍👨🏿"
+}, {
+  expected: "👨🏼‍❤‍💋‍👨🏻",
+  actual: "👨🏼‍❤‍💋‍👨🏻"
+}, {
+  expected: "👨🏼‍❤‍💋‍👨🏼",
+  actual: "👨🏼‍❤‍💋‍👨🏼"
+}, {
+  expected: "👨🏼‍❤‍💋‍👨🏽",
+  actual: "👨🏼‍❤‍💋‍👨🏽"
+}, {
+  expected: "👨🏼‍❤‍💋‍👨🏾",
+  actual: "👨🏼‍❤‍💋‍👨🏾"
+}, {
+  expected: "👨🏼‍❤‍💋‍👨🏿",
+  actual: "👨🏼‍❤‍💋‍👨🏿"
+}, {
+  expected: "👨🏽‍❤‍💋‍👨🏻",
+  actual: "👨🏽‍❤‍💋‍👨🏻"
+}, {
+  expected: "👨🏽‍❤‍💋‍👨🏼",
+  actual: "👨🏽‍❤‍💋‍👨🏼"
+}, {
+  expected: "👨🏽‍❤‍💋‍👨🏽",
+  actual: "👨🏽‍❤‍💋‍👨🏽"
+}, {
+  expected: "👨🏽‍❤‍💋‍👨🏾",
+  actual: "👨🏽‍❤‍💋‍👨🏾"
+}, {
+  expected: "👨🏽‍❤‍💋‍👨🏿",
+  actual: "👨🏽‍❤‍💋‍👨🏿"
+}, {
+  expected: "👨🏾‍❤‍💋‍👨🏻",
+  actual: "👨🏾‍❤‍💋‍👨🏻"
+}, {
+  expected: "👨🏾‍❤‍💋‍👨🏼",
+  actual: "👨🏾‍❤‍💋‍👨🏼"
+}, {
+  expected: "👨🏾‍❤‍💋‍👨🏽",
+  actual: "👨🏾‍❤‍💋‍👨🏽"
+}, {
+  expected: "👨🏾‍❤‍💋‍👨🏾",
+  actual: "👨🏾‍❤‍💋‍👨🏾"
+}, {
+  expected: "👨🏾‍❤‍💋‍👨🏿",
+  actual: "👨🏾‍❤‍💋‍👨🏿"
+}, {
+  expected: "👨🏿‍❤‍💋‍👨🏻",
+  actual: "👨🏿‍❤‍💋‍👨🏻"
+}, {
+  expected: "👨🏿‍❤‍💋‍👨🏼",
+  actual: "👨🏿‍❤‍💋‍👨🏼"
+}, {
+  expected: "👨🏿‍❤‍💋‍👨🏽",
+  actual: "👨🏿‍❤‍💋‍👨🏽"
+}, {
+  expected: "👨🏿‍❤‍💋‍👨🏾",
+  actual: "👨🏿‍❤‍💋‍👨🏾"
+}, {
+  expected: "👨🏿‍❤‍💋‍👨🏿",
+  actual: "👨🏿‍❤‍💋‍👨🏿"
+}, {
+  expected: "👩🏻‍❤‍💋‍👩🏻",
+  actual: "👩🏻‍❤‍💋‍👩🏻"
+}, {
+  expected: "👩🏻‍❤‍💋‍👩🏼",
+  actual: "👩🏻‍❤‍💋‍👩🏼"
+}, {
+  expected: "👩🏻‍❤‍💋‍👩🏽",
+  actual: "👩🏻‍❤‍💋‍👩🏽"
+}, {
+  expected: "👩🏻‍❤‍💋‍👩🏾",
+  actual: "👩🏻‍❤‍💋‍👩🏾"
+}, {
+  expected: "👩🏻‍❤‍💋‍👩🏿",
+  actual: "👩🏻‍❤‍💋‍👩🏿"
+}, {
+  expected: "👩🏼‍❤‍💋‍👩🏻",
+  actual: "👩🏼‍❤‍💋‍👩🏻"
+}, {
+  expected: "👩🏼‍❤‍💋‍👩🏼",
+  actual: "👩🏼‍❤‍💋‍👩🏼"
+}, {
+  expected: "👩🏼‍❤‍💋‍👩🏽",
+  actual: "👩🏼‍❤‍💋‍👩🏽"
+}, {
+  expected: "👩🏼‍❤‍💋‍👩🏾",
+  actual: "👩🏼‍❤‍💋‍👩🏾"
+}, {
+  expected: "👩🏼‍❤‍💋‍👩🏿",
+  actual: "👩🏼‍❤‍💋‍👩🏿"
+}, {
+  expected: "👩🏽‍❤‍💋‍👩🏻",
+  actual: "👩🏽‍❤‍💋‍👩🏻"
+}, {
+  expected: "👩🏽‍❤‍💋‍👩🏼",
+  actual: "👩🏽‍❤‍💋‍👩🏼"
+}, {
+  expected: "👩🏽‍❤‍💋‍👩🏽",
+  actual: "👩🏽‍❤‍💋‍👩🏽"
+}, {
+  expected: "👩🏽‍❤‍💋‍👩🏾",
+  actual: "👩🏽‍❤‍💋‍👩🏾"
+}, {
+  expected: "👩🏽‍❤‍💋‍👩🏿",
+  actual: "👩🏽‍❤‍💋‍👩🏿"
+}, {
+  expected: "👩🏾‍❤‍💋‍👩🏻",
+  actual: "👩🏾‍❤‍💋‍👩🏻"
+}, {
+  expected: "👩🏾‍❤‍💋‍👩🏼",
+  actual: "👩🏾‍❤‍💋‍👩🏼"
+}, {
+  expected: "👩🏾‍❤‍💋‍👩🏽",
+  actual: "👩🏾‍❤‍💋‍👩🏽"
+}, {
+  expected: "👩🏾‍❤‍💋‍👩🏾",
+  actual: "👩🏾‍❤‍💋‍👩🏾"
+}, {
+  expected: "👩🏾‍❤‍💋‍👩🏿",
+  actual: "👩🏾‍❤‍💋‍👩🏿"
+}, {
+  expected: "👩🏿‍❤‍💋‍👩🏻",
+  actual: "👩🏿‍❤‍💋‍👩🏻"
+}, {
+  expected: "👩🏿‍❤‍💋‍👩🏼",
+  actual: "👩🏿‍❤‍💋‍👩🏼"
+}, {
+  expected: "👩🏿‍❤‍💋‍👩🏽",
+  actual: "👩🏿‍❤‍💋‍👩🏽"
+}, {
+  expected: "👩🏿‍❤‍💋‍👩🏾",
+  actual: "👩🏿‍❤‍💋‍👩🏾"
+}, {
+  expected: "👩🏿‍❤‍💋‍👩🏿",
+  actual: "👩🏿‍❤‍💋‍👩🏿"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏼",
+  actual: "🧑🏻‍❤️‍🧑🏼"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏽",
+  actual: "🧑🏻‍❤️‍🧑🏽"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏾",
+  actual: "🧑🏻‍❤️‍🧑🏾"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏿",
+  actual: "🧑🏻‍❤️‍🧑🏿"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏻",
+  actual: "🧑🏼‍❤️‍🧑🏻"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏽",
+  actual: "🧑🏼‍❤️‍🧑🏽"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏾",
+  actual: "🧑🏼‍❤️‍🧑🏾"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏿",
+  actual: "🧑🏼‍❤️‍🧑🏿"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏻",
+  actual: "🧑🏽‍❤️‍🧑🏻"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏼",
+  actual: "🧑🏽‍❤️‍🧑🏼"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏾",
+  actual: "🧑🏽‍❤️‍🧑🏾"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏿",
+  actual: "🧑🏽‍❤️‍🧑🏿"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏻",
+  actual: "🧑🏾‍❤️‍🧑🏻"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏼",
+  actual: "🧑🏾‍❤️‍🧑🏼"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏽",
+  actual: "🧑🏾‍❤️‍🧑🏽"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏿",
+  actual: "🧑🏾‍❤️‍🧑🏿"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏻",
+  actual: "🧑🏿‍❤️‍🧑🏻"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏼",
+  actual: "🧑🏿‍❤️‍🧑🏼"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏽",
+  actual: "🧑🏿‍❤️‍🧑🏽"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏾",
+  actual: "🧑🏿‍❤️‍🧑🏾"
+}, {
+  expected: "👩🏻‍❤️‍👨🏻",
+  actual: "👩🏻‍❤️‍👨🏻"
+}, {
+  expected: "👩🏻‍❤️‍👨🏼",
+  actual: "👩🏻‍❤️‍👨🏼"
+}, {
+  expected: "👩🏻‍❤️‍👨🏽",
+  actual: "👩🏻‍❤️‍👨🏽"
+}, {
+  expected: "👩🏻‍❤️‍👨🏾",
+  actual: "👩🏻‍❤️‍👨🏾"
+}, {
+  expected: "👩🏻‍❤️‍👨🏿",
+  actual: "👩🏻‍❤️‍👨🏿"
+}, {
+  expected: "👩🏼‍❤️‍👨🏻",
+  actual: "👩🏼‍❤️‍👨🏻"
+}, {
+  expected: "👩🏼‍❤️‍👨🏼",
+  actual: "👩🏼‍❤️‍👨🏼"
+}, {
+  expected: "👩🏼‍❤️‍👨🏽",
+  actual: "👩🏼‍❤️‍👨🏽"
+}, {
+  expected: "👩🏼‍❤️‍👨🏾",
+  actual: "👩🏼‍❤️‍👨🏾"
+}, {
+  expected: "👩🏼‍❤️‍👨🏿",
+  actual: "👩🏼‍❤️‍👨🏿"
+}, {
+  expected: "👩🏽‍❤️‍👨🏻",
+  actual: "👩🏽‍❤️‍👨🏻"
+}, {
+  expected: "👩🏽‍❤️‍👨🏼",
+  actual: "👩🏽‍❤️‍👨🏼"
+}, {
+  expected: "👩🏽‍❤️‍👨🏽",
+  actual: "👩🏽‍❤️‍👨🏽"
+}, {
+  expected: "👩🏽‍❤️‍👨🏾",
+  actual: "👩🏽‍❤️‍👨🏾"
+}, {
+  expected: "👩🏽‍❤️‍👨🏿",
+  actual: "👩🏽‍❤️‍👨🏿"
+}, {
+  expected: "👩🏾‍❤️‍👨🏻",
+  actual: "👩🏾‍❤️‍👨🏻"
+}, {
+  expected: "👩🏾‍❤️‍👨🏼",
+  actual: "👩🏾‍❤️‍👨🏼"
+}, {
+  expected: "👩🏾‍❤️‍👨🏽",
+  actual: "👩🏾‍❤️‍👨🏽"
+}, {
+  expected: "👩🏾‍❤️‍👨🏾",
+  actual: "👩🏾‍❤️‍👨🏾"
+}, {
+  expected: "👩🏾‍❤️‍👨🏿",
+  actual: "👩🏾‍❤️‍👨🏿"
+}, {
+  expected: "👩🏿‍❤️‍👨🏻",
+  actual: "👩🏿‍❤️‍👨🏻"
+}, {
+  expected: "👩🏿‍❤️‍👨🏼",
+  actual: "👩🏿‍❤️‍👨🏼"
+}, {
+  expected: "👩🏿‍❤️‍👨🏽",
+  actual: "👩🏿‍❤️‍👨🏽"
+}, {
+  expected: "👩🏿‍❤️‍👨🏾",
+  actual: "👩🏿‍❤️‍👨🏾"
+}, {
+  expected: "👩🏿‍❤️‍👨🏿",
+  actual: "👩🏿‍❤️‍👨🏿"
+}, {
+  expected: "👨🏻‍❤️‍👨🏻",
+  actual: "👨🏻‍❤️‍👨🏻"
+}, {
+  expected: "👨🏻‍❤️‍👨🏼",
+  actual: "👨🏻‍❤️‍👨🏼"
+}, {
+  expected: "👨🏻‍❤️‍👨🏽",
+  actual: "👨🏻‍❤️‍👨🏽"
+}, {
+  expected: "👨🏻‍❤️‍👨🏾",
+  actual: "👨🏻‍❤️‍👨🏾"
+}, {
+  expected: "👨🏻‍❤️‍👨🏿",
+  actual: "👨🏻‍❤️‍👨🏿"
+}, {
+  expected: "👨🏼‍❤️‍👨🏻",
+  actual: "👨🏼‍❤️‍👨🏻"
+}, {
+  expected: "👨🏼‍❤️‍👨🏼",
+  actual: "👨🏼‍❤️‍👨🏼"
+}, {
+  expected: "👨🏼‍❤️‍👨🏽",
+  actual: "👨🏼‍❤️‍👨🏽"
+}, {
+  expected: "👨🏼‍❤️‍👨🏾",
+  actual: "👨🏼‍❤️‍👨🏾"
+}, {
+  expected: "👨🏼‍❤️‍👨🏿",
+  actual: "👨🏼‍❤️‍👨🏿"
+}, {
+  expected: "👨🏽‍❤️‍👨🏻",
+  actual: "👨🏽‍❤️‍👨🏻"
+}, {
+  expected: "👨🏽‍❤️‍👨🏼",
+  actual: "👨🏽‍❤️‍👨🏼"
+}, {
+  expected: "👨🏽‍❤️‍👨🏽",
+  actual: "👨🏽‍❤️‍👨🏽"
+}, {
+  expected: "👨🏽‍❤️‍👨🏾",
+  actual: "👨🏽‍❤️‍👨🏾"
+}, {
+  expected: "👨🏽‍❤️‍👨🏿",
+  actual: "👨🏽‍❤️‍👨🏿"
+}, {
+  expected: "👨🏾‍❤️‍👨🏻",
+  actual: "👨🏾‍❤️‍👨🏻"
+}, {
+  expected: "👨🏾‍❤️‍👨🏼",
+  actual: "👨🏾‍❤️‍👨🏼"
+}, {
+  expected: "👨🏾‍❤️‍👨🏽",
+  actual: "👨🏾‍❤️‍👨🏽"
+}, {
+  expected: "👨🏾‍❤️‍👨🏾",
+  actual: "👨🏾‍❤️‍👨🏾"
+}, {
+  expected: "👨🏾‍❤️‍👨🏿",
+  actual: "👨🏾‍❤️‍👨🏿"
+}, {
+  expected: "👨🏿‍❤️‍👨🏻",
+  actual: "👨🏿‍❤️‍👨🏻"
+}, {
+  expected: "👨🏿‍❤️‍👨🏼",
+  actual: "👨🏿‍❤️‍👨🏼"
+}, {
+  expected: "👨🏿‍❤️‍👨🏽",
+  actual: "👨🏿‍❤️‍👨🏽"
+}, {
+  expected: "👨🏿‍❤️‍👨🏾",
+  actual: "👨🏿‍❤️‍👨🏾"
+}, {
+  expected: "👨🏿‍❤️‍👨🏿",
+  actual: "👨🏿‍❤️‍👨🏿"
+}, {
+  expected: "👩🏻‍❤️‍👩🏻",
+  actual: "👩🏻‍❤️‍👩🏻"
+}, {
+  expected: "👩🏻‍❤️‍👩🏼",
+  actual: "👩🏻‍❤️‍👩🏼"
+}, {
+  expected: "👩🏻‍❤️‍👩🏽",
+  actual: "👩🏻‍❤️‍👩🏽"
+}, {
+  expected: "👩🏻‍❤️‍👩🏾",
+  actual: "👩🏻‍❤️‍👩🏾"
+}, {
+  expected: "👩🏻‍❤️‍👩🏿",
+  actual: "👩🏻‍❤️‍👩🏿"
+}, {
+  expected: "👩🏼‍❤️‍👩🏻",
+  actual: "👩🏼‍❤️‍👩🏻"
+}, {
+  expected: "👩🏼‍❤️‍👩🏼",
+  actual: "👩🏼‍❤️‍👩🏼"
+}, {
+  expected: "👩🏼‍❤️‍👩🏽",
+  actual: "👩🏼‍❤️‍👩🏽"
+}, {
+  expected: "👩🏼‍❤️‍👩🏾",
+  actual: "👩🏼‍❤️‍👩🏾"
+}, {
+  expected: "👩🏼‍❤️‍👩🏿",
+  actual: "👩🏼‍❤️‍👩🏿"
+}, {
+  expected: "👩🏽‍❤️‍👩🏻",
+  actual: "👩🏽‍❤️‍👩🏻"
+}, {
+  expected: "👩🏽‍❤️‍👩🏼",
+  actual: "👩🏽‍❤️‍👩🏼"
+}, {
+  expected: "👩🏽‍❤️‍👩🏽",
+  actual: "👩🏽‍❤️‍👩🏽"
+}, {
+  expected: "👩🏽‍❤️‍👩🏾",
+  actual: "👩🏽‍❤️‍👩🏾"
+}, {
+  expected: "👩🏽‍❤️‍👩🏿",
+  actual: "👩🏽‍❤️‍👩🏿"
+}, {
+  expected: "👩🏾‍❤️‍👩🏻",
+  actual: "👩🏾‍❤️‍👩🏻"
+}, {
+  expected: "👩🏾‍❤️‍👩🏼",
+  actual: "👩🏾‍❤️‍👩🏼"
+}, {
+  expected: "👩🏾‍❤️‍👩🏽",
+  actual: "👩🏾‍❤️‍👩🏽"
+}, {
+  expected: "👩🏾‍❤️‍👩🏾",
+  actual: "👩🏾‍❤️‍👩🏾"
+}, {
+  expected: "👩🏾‍❤️‍👩🏿",
+  actual: "👩🏾‍❤️‍👩🏿"
+}, {
+  expected: "👩🏿‍❤️‍👩🏻",
+  actual: "👩🏿‍❤️‍👩🏻"
+}, {
+  expected: "👩🏿‍❤️‍👩🏼",
+  actual: "👩🏿‍❤️‍👩🏼"
+}, {
+  expected: "👩🏿‍❤️‍👩🏽",
+  actual: "👩🏿‍❤️‍👩🏽"
+}, {
+  expected: "👩🏿‍❤️‍👩🏾",
+  actual: "👩🏿‍❤️‍👩🏾"
+}, {
+  expected: "👩🏿‍❤️‍👩🏿",
+  actual: "👩🏿‍❤️‍👩🏿"
+}, {
+  expected: "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+  actual: "🏴󠁧󠁢󠁥󠁮󠁧󠁿"
+}, {
+  expected: "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+  actual: "🏴󠁧󠁢󠁳󠁣󠁴󠁿"
+}, {
+  expected: "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+  actual: "🏴󠁧󠁢󠁷󠁬󠁳󠁿"
+}, {
+  expected: "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+  actual: "🏴󠁧󠁢󠁥󠁮󠁧󠁿"
+}, {
+  expected: "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+  actual: "🏴󠁧󠁢󠁳󠁣󠁴󠁿"
+}, {
+  expected: "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+  actual: "🏴󠁧󠁢󠁷󠁬󠁳󠁿"
+}, {
+  expected: "👩‍❤️‍💋‍👨",
+  actual: "👩‍❤️‍💋‍👨"
+}, {
+  expected: "👨‍❤️‍💋‍👨",
+  actual: "👨‍❤️‍💋‍👨"
+}, {
+  expected: "👩‍❤️‍💋‍👩",
+  actual: "👩‍❤️‍💋‍👩"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏻",
+  actual: "🧑🏻‍🤝‍🧑🏻"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏼",
+  actual: "🧑🏻‍🤝‍🧑🏼"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏽",
+  actual: "🧑🏻‍🤝‍🧑🏽"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏾",
+  actual: "🧑🏻‍🤝‍🧑🏾"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏿",
+  actual: "🧑🏻‍🤝‍🧑🏿"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏻",
+  actual: "🧑🏼‍🤝‍🧑🏻"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏼",
+  actual: "🧑🏼‍🤝‍🧑🏼"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏽",
+  actual: "🧑🏼‍🤝‍🧑🏽"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏾",
+  actual: "🧑🏼‍🤝‍🧑🏾"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏿",
+  actual: "🧑🏼‍🤝‍🧑🏿"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏻",
+  actual: "🧑🏽‍🤝‍🧑🏻"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏼",
+  actual: "🧑🏽‍🤝‍🧑🏼"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏽",
+  actual: "🧑🏽‍🤝‍🧑🏽"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏾",
+  actual: "🧑🏽‍🤝‍🧑🏾"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏿",
+  actual: "🧑🏽‍🤝‍🧑🏿"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏻",
+  actual: "🧑🏾‍🤝‍🧑🏻"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏼",
+  actual: "🧑🏾‍🤝‍🧑🏼"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏽",
+  actual: "🧑🏾‍🤝‍🧑🏽"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏾",
+  actual: "🧑🏾‍🤝‍🧑🏾"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏿",
+  actual: "🧑🏾‍🤝‍🧑🏿"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏻",
+  actual: "🧑🏿‍🤝‍🧑🏻"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏼",
+  actual: "🧑🏿‍🤝‍🧑🏼"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏽",
+  actual: "🧑🏿‍🤝‍🧑🏽"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏾",
+  actual: "🧑🏿‍🤝‍🧑🏾"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏿",
+  actual: "🧑🏿‍🤝‍🧑🏿"
+}, {
+  expected: "👩🏻‍🤝‍👩🏼",
+  actual: "👩🏻‍🤝‍👩🏼"
+}, {
+  expected: "👩🏻‍🤝‍👩🏽",
+  actual: "👩🏻‍🤝‍👩🏽"
+}, {
+  expected: "👩🏻‍🤝‍👩🏾",
+  actual: "👩🏻‍🤝‍👩🏾"
+}, {
+  expected: "👩🏻‍🤝‍👩🏿",
+  actual: "👩🏻‍🤝‍👩🏿"
+}, {
+  expected: "👩🏼‍🤝‍👩🏻",
+  actual: "👩🏼‍🤝‍👩🏻"
+}, {
+  expected: "👩🏼‍🤝‍👩🏽",
+  actual: "👩🏼‍🤝‍👩🏽"
+}, {
+  expected: "👩🏼‍🤝‍👩🏾",
+  actual: "👩🏼‍🤝‍👩🏾"
+}, {
+  expected: "👩🏼‍🤝‍👩🏿",
+  actual: "👩🏼‍🤝‍👩🏿"
+}, {
+  expected: "👩🏽‍🤝‍👩🏻",
+  actual: "👩🏽‍🤝‍👩🏻"
+}, {
+  expected: "👩🏽‍🤝‍👩🏼",
+  actual: "👩🏽‍🤝‍👩🏼"
+}, {
+  expected: "👩🏽‍🤝‍👩🏾",
+  actual: "👩🏽‍🤝‍👩🏾"
+}, {
+  expected: "👩🏽‍🤝‍👩🏿",
+  actual: "👩🏽‍🤝‍👩🏿"
+}, {
+  expected: "👩🏾‍🤝‍👩🏻",
+  actual: "👩🏾‍🤝‍👩🏻"
+}, {
+  expected: "👩🏾‍🤝‍👩🏼",
+  actual: "👩🏾‍🤝‍👩🏼"
+}, {
+  expected: "👩🏾‍🤝‍👩🏽",
+  actual: "👩🏾‍🤝‍👩🏽"
+}, {
+  expected: "👩🏾‍🤝‍👩🏿",
+  actual: "👩🏾‍🤝‍👩🏿"
+}, {
+  expected: "👩🏿‍🤝‍👩🏻",
+  actual: "👩🏿‍🤝‍👩🏻"
+}, {
+  expected: "👩🏿‍🤝‍👩🏼",
+  actual: "👩🏿‍🤝‍👩🏼"
+}, {
+  expected: "👩🏿‍🤝‍👩🏽",
+  actual: "👩🏿‍🤝‍👩🏽"
+}, {
+  expected: "👩🏿‍🤝‍👩🏾",
+  actual: "👩🏿‍🤝‍👩🏾"
+}, {
+  expected: "👩🏻‍🤝‍👨🏼",
+  actual: "👩🏻‍🤝‍👨🏼"
+}, {
+  expected: "👩🏻‍🤝‍👨🏽",
+  actual: "👩🏻‍🤝‍👨🏽"
+}, {
+  expected: "👩🏻‍🤝‍👨🏾",
+  actual: "👩🏻‍🤝‍👨🏾"
+}, {
+  expected: "👩🏻‍🤝‍👨🏿",
+  actual: "👩🏻‍🤝‍👨🏿"
+}, {
+  expected: "👩🏼‍🤝‍👨🏻",
+  actual: "👩🏼‍🤝‍👨🏻"
+}, {
+  expected: "👩🏼‍🤝‍👨🏽",
+  actual: "👩🏼‍🤝‍👨🏽"
+}, {
+  expected: "👩🏼‍🤝‍👨🏾",
+  actual: "👩🏼‍🤝‍👨🏾"
+}, {
+  expected: "👩🏼‍🤝‍👨🏿",
+  actual: "👩🏼‍🤝‍👨🏿"
+}, {
+  expected: "👩🏽‍🤝‍👨🏻",
+  actual: "👩🏽‍🤝‍👨🏻"
+}, {
+  expected: "👩🏽‍🤝‍👨🏼",
+  actual: "👩🏽‍🤝‍👨🏼"
+}, {
+  expected: "👩🏽‍🤝‍👨🏾",
+  actual: "👩🏽‍🤝‍👨🏾"
+}, {
+  expected: "👩🏽‍🤝‍👨🏿",
+  actual: "👩🏽‍🤝‍👨🏿"
+}, {
+  expected: "👩🏾‍🤝‍👨🏻",
+  actual: "👩🏾‍🤝‍👨🏻"
+}, {
+  expected: "👩🏾‍🤝‍👨🏼",
+  actual: "👩🏾‍🤝‍👨🏼"
+}, {
+  expected: "👩🏾‍🤝‍👨🏽",
+  actual: "👩🏾‍🤝‍👨🏽"
+}, {
+  expected: "👩🏾‍🤝‍👨🏿",
+  actual: "👩🏾‍🤝‍👨🏿"
+}, {
+  expected: "👩🏿‍🤝‍👨🏻",
+  actual: "👩🏿‍🤝‍👨🏻"
+}, {
+  expected: "👩🏿‍🤝‍👨🏼",
+  actual: "👩🏿‍🤝‍👨🏼"
+}, {
+  expected: "👩🏿‍🤝‍👨🏽",
+  actual: "👩🏿‍🤝‍👨🏽"
+}, {
+  expected: "👩🏿‍🤝‍👨🏾",
+  actual: "👩🏿‍🤝‍👨🏾"
+}, {
+  expected: "👨🏻‍🤝‍👨🏼",
+  actual: "👨🏻‍🤝‍👨🏼"
+}, {
+  expected: "👨🏻‍🤝‍👨🏽",
+  actual: "👨🏻‍🤝‍👨🏽"
+}, {
+  expected: "👨🏻‍🤝‍👨🏾",
+  actual: "👨🏻‍🤝‍👨🏾"
+}, {
+  expected: "👨🏻‍🤝‍👨🏿",
+  actual: "👨🏻‍🤝‍👨🏿"
+}, {
+  expected: "👨🏼‍🤝‍👨🏻",
+  actual: "👨🏼‍🤝‍👨🏻"
+}, {
+  expected: "👨🏼‍🤝‍👨🏽",
+  actual: "👨🏼‍🤝‍👨🏽"
+}, {
+  expected: "👨🏼‍🤝‍👨🏾",
+  actual: "👨🏼‍🤝‍👨🏾"
+}, {
+  expected: "👨🏼‍🤝‍👨🏿",
+  actual: "👨🏼‍🤝‍👨🏿"
+}, {
+  expected: "👨🏽‍🤝‍👨🏻",
+  actual: "👨🏽‍🤝‍👨🏻"
+}, {
+  expected: "👨🏽‍🤝‍👨🏼",
+  actual: "👨🏽‍🤝‍👨🏼"
+}, {
+  expected: "👨🏽‍🤝‍👨🏾",
+  actual: "👨🏽‍🤝‍👨🏾"
+}, {
+  expected: "👨🏽‍🤝‍👨🏿",
+  actual: "👨🏽‍🤝‍👨🏿"
+}, {
+  expected: "👨🏾‍🤝‍👨🏻",
+  actual: "👨🏾‍🤝‍👨🏻"
+}, {
+  expected: "👨🏾‍🤝‍👨🏼",
+  actual: "👨🏾‍🤝‍👨🏼"
+}, {
+  expected: "👨🏾‍🤝‍👨🏽",
+  actual: "👨🏾‍🤝‍👨🏽"
+}, {
+  expected: "👨🏾‍🤝‍👨🏿",
+  actual: "👨🏾‍🤝‍👨🏿"
+}, {
+  expected: "👨🏿‍🤝‍👨🏻",
+  actual: "👨🏿‍🤝‍👨🏻"
+}, {
+  expected: "👨🏿‍🤝‍👨🏼",
+  actual: "👨🏿‍🤝‍👨🏼"
+}, {
+  expected: "👨🏿‍🤝‍👨🏽",
+  actual: "👨🏿‍🤝‍👨🏽"
+}, {
+  expected: "👨🏿‍🤝‍👨🏾",
+  actual: "👨🏿‍🤝‍👨🏾"
+}, {
+  expected: "🧑🏻‍❤‍🧑🏼",
+  actual: "🧑🏻‍❤‍🧑🏼"
+}, {
+  expected: "🧑🏻‍❤‍🧑🏽",
+  actual: "🧑🏻‍❤‍🧑🏽"
+}, {
+  expected: "🧑🏻‍❤‍🧑🏾",
+  actual: "🧑🏻‍❤‍🧑🏾"
+}, {
+  expected: "🧑🏻‍❤‍🧑🏿",
+  actual: "🧑🏻‍❤‍🧑🏿"
+}, {
+  expected: "🧑🏼‍❤‍🧑🏻",
+  actual: "🧑🏼‍❤‍🧑🏻"
+}, {
+  expected: "🧑🏼‍❤‍🧑🏽",
+  actual: "🧑🏼‍❤‍🧑🏽"
+}, {
+  expected: "🧑🏼‍❤‍🧑🏾",
+  actual: "🧑🏼‍❤‍🧑🏾"
+}, {
+  expected: "🧑🏼‍❤‍🧑🏿",
+  actual: "🧑🏼‍❤‍🧑🏿"
+}, {
+  expected: "🧑🏽‍❤‍🧑🏻",
+  actual: "🧑🏽‍❤‍🧑🏻"
+}, {
+  expected: "🧑🏽‍❤‍🧑🏼",
+  actual: "🧑🏽‍❤‍🧑🏼"
+}, {
+  expected: "🧑🏽‍❤‍🧑🏾",
+  actual: "🧑🏽‍❤‍🧑🏾"
+}, {
+  expected: "🧑🏽‍❤‍🧑🏿",
+  actual: "🧑🏽‍❤‍🧑🏿"
+}, {
+  expected: "🧑🏾‍❤‍🧑🏻",
+  actual: "🧑🏾‍❤‍🧑🏻"
+}, {
+  expected: "🧑🏾‍❤‍🧑🏼",
+  actual: "🧑🏾‍❤‍🧑🏼"
+}, {
+  expected: "🧑🏾‍❤‍🧑🏽",
+  actual: "🧑🏾‍❤‍🧑🏽"
+}, {
+  expected: "🧑🏾‍❤‍🧑🏿",
+  actual: "🧑🏾‍❤‍🧑🏿"
+}, {
+  expected: "🧑🏿‍❤‍🧑🏻",
+  actual: "🧑🏿‍❤‍🧑🏻"
+}, {
+  expected: "🧑🏿‍❤‍🧑🏼",
+  actual: "🧑🏿‍❤‍🧑🏼"
+}, {
+  expected: "🧑🏿‍❤‍🧑🏽",
+  actual: "🧑🏿‍❤‍🧑🏽"
+}, {
+  expected: "🧑🏿‍❤‍🧑🏾",
+  actual: "🧑🏿‍❤‍🧑🏾"
+}, {
+  expected: "👩🏻‍❤‍👨🏻",
+  actual: "👩🏻‍❤‍👨🏻"
+}, {
+  expected: "👩🏻‍❤‍👨🏼",
+  actual: "👩🏻‍❤‍👨🏼"
+}, {
+  expected: "👩🏻‍❤‍👨🏽",
+  actual: "👩🏻‍❤‍👨🏽"
+}, {
+  expected: "👩🏻‍❤‍👨🏾",
+  actual: "👩🏻‍❤‍👨🏾"
+}, {
+  expected: "👩🏻‍❤‍👨🏿",
+  actual: "👩🏻‍❤‍👨🏿"
+}, {
+  expected: "👩🏼‍❤‍👨🏻",
+  actual: "👩🏼‍❤‍👨🏻"
+}, {
+  expected: "👩🏼‍❤‍👨🏼",
+  actual: "👩🏼‍❤‍👨🏼"
+}, {
+  expected: "👩🏼‍❤‍👨🏽",
+  actual: "👩🏼‍❤‍👨🏽"
+}, {
+  expected: "👩🏼‍❤‍👨🏾",
+  actual: "👩🏼‍❤‍👨🏾"
+}, {
+  expected: "👩🏼‍❤‍👨🏿",
+  actual: "👩🏼‍❤‍👨🏿"
+}, {
+  expected: "👩🏽‍❤‍👨🏻",
+  actual: "👩🏽‍❤‍👨🏻"
+}, {
+  expected: "👩🏽‍❤‍👨🏼",
+  actual: "👩🏽‍❤‍👨🏼"
+}, {
+  expected: "👩🏽‍❤‍👨🏽",
+  actual: "👩🏽‍❤‍👨🏽"
+}, {
+  expected: "👩🏽‍❤‍👨🏾",
+  actual: "👩🏽‍❤‍👨🏾"
+}, {
+  expected: "👩🏽‍❤‍👨🏿",
+  actual: "👩🏽‍❤‍👨🏿"
+}, {
+  expected: "👩🏾‍❤‍👨🏻",
+  actual: "👩🏾‍❤‍👨🏻"
+}, {
+  expected: "👩🏾‍❤‍👨🏼",
+  actual: "👩🏾‍❤‍👨🏼"
+}, {
+  expected: "👩🏾‍❤‍👨🏽",
+  actual: "👩🏾‍❤‍👨🏽"
+}, {
+  expected: "👩🏾‍❤‍👨🏾",
+  actual: "👩🏾‍❤‍👨🏾"
+}, {
+  expected: "👩🏾‍❤‍👨🏿",
+  actual: "👩🏾‍❤‍👨🏿"
+}, {
+  expected: "👩🏿‍❤‍👨🏻",
+  actual: "👩🏿‍❤‍👨🏻"
+}, {
+  expected: "👩🏿‍❤‍👨🏼",
+  actual: "👩🏿‍❤‍👨🏼"
+}, {
+  expected: "👩🏿‍❤‍👨🏽",
+  actual: "👩🏿‍❤‍👨🏽"
+}, {
+  expected: "👩🏿‍❤‍👨🏾",
+  actual: "👩🏿‍❤‍👨🏾"
+}, {
+  expected: "👩🏿‍❤‍👨🏿",
+  actual: "👩🏿‍❤‍👨🏿"
+}, {
+  expected: "👨🏻‍❤‍👨🏻",
+  actual: "👨🏻‍❤‍👨🏻"
+}, {
+  expected: "👨🏻‍❤‍👨🏼",
+  actual: "👨🏻‍❤‍👨🏼"
+}, {
+  expected: "👨🏻‍❤‍👨🏽",
+  actual: "👨🏻‍❤‍👨🏽"
+}, {
+  expected: "👨🏻‍❤‍👨🏾",
+  actual: "👨🏻‍❤‍👨🏾"
+}, {
+  expected: "👨🏻‍❤‍👨🏿",
+  actual: "👨🏻‍❤‍👨🏿"
+}, {
+  expected: "👨🏼‍❤‍👨🏻",
+  actual: "👨🏼‍❤‍👨🏻"
+}, {
+  expected: "👨🏼‍❤‍👨🏼",
+  actual: "👨🏼‍❤‍👨🏼"
+}, {
+  expected: "👨🏼‍❤‍👨🏽",
+  actual: "👨🏼‍❤‍👨🏽"
+}, {
+  expected: "👨🏼‍❤‍👨🏾",
+  actual: "👨🏼‍❤‍👨🏾"
+}, {
+  expected: "👨🏼‍❤‍👨🏿",
+  actual: "👨🏼‍❤‍👨🏿"
+}, {
+  expected: "👨🏽‍❤‍👨🏻",
+  actual: "👨🏽‍❤‍👨🏻"
+}, {
+  expected: "👨🏽‍❤‍👨🏼",
+  actual: "👨🏽‍❤‍👨🏼"
+}, {
+  expected: "👨🏽‍❤‍👨🏽",
+  actual: "👨🏽‍❤‍👨🏽"
+}, {
+  expected: "👨🏽‍❤‍👨🏾",
+  actual: "👨🏽‍❤‍👨🏾"
+}, {
+  expected: "👨🏽‍❤‍👨🏿",
+  actual: "👨🏽‍❤‍👨🏿"
+}, {
+  expected: "👨🏾‍❤‍👨🏻",
+  actual: "👨🏾‍❤‍👨🏻"
+}, {
+  expected: "👨🏾‍❤‍👨🏼",
+  actual: "👨🏾‍❤‍👨🏼"
+}, {
+  expected: "👨🏾‍❤‍👨🏽",
+  actual: "👨🏾‍❤‍👨🏽"
+}, {
+  expected: "👨🏾‍❤‍👨🏾",
+  actual: "👨🏾‍❤‍👨🏾"
+}, {
+  expected: "👨🏾‍❤‍👨🏿",
+  actual: "👨🏾‍❤‍👨🏿"
+}, {
+  expected: "👨🏿‍❤‍👨🏻",
+  actual: "👨🏿‍❤‍👨🏻"
+}, {
+  expected: "👨🏿‍❤‍👨🏼",
+  actual: "👨🏿‍❤‍👨🏼"
+}, {
+  expected: "👨🏿‍❤‍👨🏽",
+  actual: "👨🏿‍❤‍👨🏽"
+}, {
+  expected: "👨🏿‍❤‍👨🏾",
+  actual: "👨🏿‍❤‍👨🏾"
+}, {
+  expected: "👨🏿‍❤‍👨🏿",
+  actual: "👨🏿‍❤‍👨🏿"
+}, {
+  expected: "👩🏻‍❤‍👩🏻",
+  actual: "👩🏻‍❤‍👩🏻"
+}, {
+  expected: "👩🏻‍❤‍👩🏼",
+  actual: "👩🏻‍❤‍👩🏼"
+}, {
+  expected: "👩🏻‍❤‍👩🏽",
+  actual: "👩🏻‍❤‍👩🏽"
+}, {
+  expected: "👩🏻‍❤‍👩🏾",
+  actual: "👩🏻‍❤‍👩🏾"
+}, {
+  expected: "👩🏻‍❤‍👩🏿",
+  actual: "👩🏻‍❤‍👩🏿"
+}, {
+  expected: "👩🏼‍❤‍👩🏻",
+  actual: "👩🏼‍❤‍👩🏻"
+}, {
+  expected: "👩🏼‍❤‍👩🏼",
+  actual: "👩🏼‍❤‍👩🏼"
+}, {
+  expected: "👩🏼‍❤‍👩🏽",
+  actual: "👩🏼‍❤‍👩🏽"
+}, {
+  expected: "👩🏼‍❤‍👩🏾",
+  actual: "👩🏼‍❤‍👩🏾"
+}, {
+  expected: "👩🏼‍❤‍👩🏿",
+  actual: "👩🏼‍❤‍👩🏿"
+}, {
+  expected: "👩🏽‍❤‍👩🏻",
+  actual: "👩🏽‍❤‍👩🏻"
+}, {
+  expected: "👩🏽‍❤‍👩🏼",
+  actual: "👩🏽‍❤‍👩🏼"
+}, {
+  expected: "👩🏽‍❤‍👩🏽",
+  actual: "👩🏽‍❤‍👩🏽"
+}, {
+  expected: "👩🏽‍❤‍👩🏾",
+  actual: "👩🏽‍❤‍👩🏾"
+}, {
+  expected: "👩🏽‍❤‍👩🏿",
+  actual: "👩🏽‍❤‍👩🏿"
+}, {
+  expected: "👩🏾‍❤‍👩🏻",
+  actual: "👩🏾‍❤‍👩🏻"
+}, {
+  expected: "👩🏾‍❤‍👩🏼",
+  actual: "👩🏾‍❤‍👩🏼"
+}, {
+  expected: "👩🏾‍❤‍👩🏽",
+  actual: "👩🏾‍❤‍👩🏽"
+}, {
+  expected: "👩🏾‍❤‍👩🏾",
+  actual: "👩🏾‍❤‍👩🏾"
+}, {
+  expected: "👩🏾‍❤‍👩🏿",
+  actual: "👩🏾‍❤‍👩🏿"
+}, {
+  expected: "👩🏿‍❤‍👩🏻",
+  actual: "👩🏿‍❤‍👩🏻"
+}, {
+  expected: "👩🏿‍❤‍👩🏼",
+  actual: "👩🏿‍❤‍👩🏼"
+}, {
+  expected: "👩🏿‍❤‍👩🏽",
+  actual: "👩🏿‍❤‍👩🏽"
+}, {
+  expected: "👩🏿‍❤‍👩🏾",
+  actual: "👩🏿‍❤‍👩🏾"
+}, {
+  expected: "👩🏿‍❤‍👩🏿",
+  actual: "👩🏿‍❤‍👩🏿"
+}, {
+  expected: "👨‍👩‍👧‍👦",
+  actual: "👨‍👩‍👧‍👦"
+}, {
+  expected: "👨‍👩‍👦‍👦",
+  actual: "👨‍👩‍👦‍👦"
+}, {
+  expected: "👨‍👩‍👧‍👧",
+  actual: "👨‍👩‍👧‍👧"
+}, {
+  expected: "👨‍👨‍👧‍👦",
+  actual: "👨‍👨‍👧‍👦"
+}, {
+  expected: "👨‍👨‍👦‍👦",
+  actual: "👨‍👨‍👦‍👦"
+}, {
+  expected: "👨‍👨‍👧‍👧",
+  actual: "👨‍👨‍👧‍👧"
+}, {
+  expected: "👩‍👩‍👧‍👦",
+  actual: "👩‍👩‍👧‍👦"
+}, {
+  expected: "👩‍👩‍👦‍👦",
+  actual: "👩‍👩‍👦‍👦"
+}, {
+  expected: "👩‍👩‍👧‍👧",
+  actual: "👩‍👩‍👧‍👧"
+}, {
+  expected: "🧑‍🧑‍🧒‍🧒",
+  actual: "🧑‍🧑‍🧒‍🧒"
+}, {
+  expected: "👩‍❤‍💋‍👨",
+  actual: "👩‍❤‍💋‍👨"
+}, {
+  expected: "👨‍❤‍💋‍👨",
+  actual: "👨‍❤‍💋‍👨"
+}, {
+  expected: "👩‍❤‍💋‍👩",
+  actual: "👩‍❤‍💋‍👩"
+}, {
+  expected: "🧑🏻‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏻❤💋🧑🏼"
+}, {
+  expected: "🧑🏻‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏻❤💋🧑🏽"
+}, {
+  expected: "🧑🏻‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏻❤💋🧑🏾"
+}, {
+  expected: "🧑🏻‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏻❤💋🧑🏿"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏼❤💋🧑🏻"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏼❤💋🧑🏽"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏼❤💋🧑🏾"
+}, {
+  expected: "🧑🏼‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏼❤💋🧑🏿"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏽❤💋🧑🏻"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏽❤💋🧑🏼"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏽❤💋🧑🏾"
+}, {
+  expected: "🧑🏽‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏽❤💋🧑🏿"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏾❤💋🧑🏻"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏾❤💋🧑🏼"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏾❤💋🧑🏽"
+}, {
+  expected: "🧑🏾‍❤️‍💋‍🧑🏿",
+  actual: "🧑🏾❤💋🧑🏿"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏻",
+  actual: "🧑🏿❤💋🧑🏻"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏼",
+  actual: "🧑🏿❤💋🧑🏼"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏽",
+  actual: "🧑🏿❤💋🧑🏽"
+}, {
+  expected: "🧑🏿‍❤️‍💋‍🧑🏾",
+  actual: "🧑🏿❤💋🧑🏾"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏻",
+  actual: "👩🏻❤💋👨🏻"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏼",
+  actual: "👩🏻❤💋👨🏼"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏽",
+  actual: "👩🏻❤💋👨🏽"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏾",
+  actual: "👩🏻❤💋👨🏾"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👨🏿",
+  actual: "👩🏻❤💋👨🏿"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏻",
+  actual: "👩🏼❤💋👨🏻"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏼",
+  actual: "👩🏼❤💋👨🏼"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏽",
+  actual: "👩🏼❤💋👨🏽"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏾",
+  actual: "👩🏼❤💋👨🏾"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👨🏿",
+  actual: "👩🏼❤💋👨🏿"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏻",
+  actual: "👩🏽❤💋👨🏻"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏼",
+  actual: "👩🏽❤💋👨🏼"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏽",
+  actual: "👩🏽❤💋👨🏽"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏾",
+  actual: "👩🏽❤💋👨🏾"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👨🏿",
+  actual: "👩🏽❤💋👨🏿"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏻",
+  actual: "👩🏾❤💋👨🏻"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏼",
+  actual: "👩🏾❤💋👨🏼"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏽",
+  actual: "👩🏾❤💋👨🏽"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏾",
+  actual: "👩🏾❤💋👨🏾"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👨🏿",
+  actual: "👩🏾❤💋👨🏿"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏻",
+  actual: "👩🏿❤💋👨🏻"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏼",
+  actual: "👩🏿❤💋👨🏼"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏽",
+  actual: "👩🏿❤💋👨🏽"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏾",
+  actual: "👩🏿❤💋👨🏾"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👨🏿",
+  actual: "👩🏿❤💋👨🏿"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏻",
+  actual: "👨🏻❤💋👨🏻"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏼",
+  actual: "👨🏻❤💋👨🏼"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏽",
+  actual: "👨🏻❤💋👨🏽"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏾",
+  actual: "👨🏻❤💋👨🏾"
+}, {
+  expected: "👨🏻‍❤️‍💋‍👨🏿",
+  actual: "👨🏻❤💋👨🏿"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏻",
+  actual: "👨🏼❤💋👨🏻"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏼",
+  actual: "👨🏼❤💋👨🏼"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏽",
+  actual: "👨🏼❤💋👨🏽"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏾",
+  actual: "👨🏼❤💋👨🏾"
+}, {
+  expected: "👨🏼‍❤️‍💋‍👨🏿",
+  actual: "👨🏼❤💋👨🏿"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏻",
+  actual: "👨🏽❤💋👨🏻"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏼",
+  actual: "👨🏽❤💋👨🏼"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏽",
+  actual: "👨🏽❤💋👨🏽"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏾",
+  actual: "👨🏽❤💋👨🏾"
+}, {
+  expected: "👨🏽‍❤️‍💋‍👨🏿",
+  actual: "👨🏽❤💋👨🏿"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏻",
+  actual: "👨🏾❤💋👨🏻"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏼",
+  actual: "👨🏾❤💋👨🏼"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏽",
+  actual: "👨🏾❤💋👨🏽"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏾",
+  actual: "👨🏾❤💋👨🏾"
+}, {
+  expected: "👨🏾‍❤️‍💋‍👨🏿",
+  actual: "👨🏾❤💋👨🏿"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏻",
+  actual: "👨🏿❤💋👨🏻"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏼",
+  actual: "👨🏿❤💋👨🏼"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏽",
+  actual: "👨🏿❤💋👨🏽"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏾",
+  actual: "👨🏿❤💋👨🏾"
+}, {
+  expected: "👨🏿‍❤️‍💋‍👨🏿",
+  actual: "👨🏿❤💋👨🏿"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏻",
+  actual: "👩🏻❤💋👩🏻"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏼",
+  actual: "👩🏻❤💋👩🏼"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏽",
+  actual: "👩🏻❤💋👩🏽"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏾",
+  actual: "👩🏻❤💋👩🏾"
+}, {
+  expected: "👩🏻‍❤️‍💋‍👩🏿",
+  actual: "👩🏻❤💋👩🏿"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏻",
+  actual: "👩🏼❤💋👩🏻"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏼",
+  actual: "👩🏼❤💋👩🏼"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏽",
+  actual: "👩🏼❤💋👩🏽"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏾",
+  actual: "👩🏼❤💋👩🏾"
+}, {
+  expected: "👩🏼‍❤️‍💋‍👩🏿",
+  actual: "👩🏼❤💋👩🏿"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏻",
+  actual: "👩🏽❤💋👩🏻"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏼",
+  actual: "👩🏽❤💋👩🏼"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏽",
+  actual: "👩🏽❤💋👩🏽"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏾",
+  actual: "👩🏽❤💋👩🏾"
+}, {
+  expected: "👩🏽‍❤️‍💋‍👩🏿",
+  actual: "👩🏽❤💋👩🏿"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏻",
+  actual: "👩🏾❤💋👩🏻"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏼",
+  actual: "👩🏾❤💋👩🏼"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏽",
+  actual: "👩🏾❤💋👩🏽"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏾",
+  actual: "👩🏾❤💋👩🏾"
+}, {
+  expected: "👩🏾‍❤️‍💋‍👩🏿",
+  actual: "👩🏾❤💋👩🏿"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏻",
+  actual: "👩🏿❤💋👩🏻"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏼",
+  actual: "👩🏿❤💋👩🏼"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏽",
+  actual: "👩🏿❤💋👩🏽"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏾",
+  actual: "👩🏿❤💋👩🏾"
+}, {
+  expected: "👩🏿‍❤️‍💋‍👩🏿",
+  actual: "👩🏿❤💋👩🏿"
+}, {
+  expected: "🏃‍♀️‍➡️",
+  actual: "🏃‍♀️‍➡️"
+}, {
+  expected: "🏃‍♂️‍➡️",
+  actual: "🏃‍♂️‍➡️"
+}, {
+  expected: "🚶‍♀️‍➡️",
+  actual: "🚶‍♀️‍➡️"
+}, {
+  expected: "🚶‍♂️‍➡️",
+  actual: "🚶‍♂️‍➡️"
+}, {
+  expected: "🧎‍♀️‍➡️",
+  actual: "🧎‍♀️‍➡️"
+}, {
+  expected: "🧎‍♂️‍➡️",
+  actual: "🧎‍♂️‍➡️"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏻",
+  actual: "🧑🏻🤝🧑🏻"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏼",
+  actual: "🧑🏻🤝🧑🏼"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏽",
+  actual: "🧑🏻🤝🧑🏽"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏾",
+  actual: "🧑🏻🤝🧑🏾"
+}, {
+  expected: "🧑🏻‍🤝‍🧑🏿",
+  actual: "🧑🏻🤝🧑🏿"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏻",
+  actual: "🧑🏼🤝🧑🏻"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏼",
+  actual: "🧑🏼🤝🧑🏼"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏽",
+  actual: "🧑🏼🤝🧑🏽"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏾",
+  actual: "🧑🏼🤝🧑🏾"
+}, {
+  expected: "🧑🏼‍🤝‍🧑🏿",
+  actual: "🧑🏼🤝🧑🏿"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏻",
+  actual: "🧑🏽🤝🧑🏻"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏼",
+  actual: "🧑🏽🤝🧑🏼"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏽",
+  actual: "🧑🏽🤝🧑🏽"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏾",
+  actual: "🧑🏽🤝🧑🏾"
+}, {
+  expected: "🧑🏽‍🤝‍🧑🏿",
+  actual: "🧑🏽🤝🧑🏿"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏻",
+  actual: "🧑🏾🤝🧑🏻"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏼",
+  actual: "🧑🏾🤝🧑🏼"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏽",
+  actual: "🧑🏾🤝🧑🏽"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏾",
+  actual: "🧑🏾🤝🧑🏾"
+}, {
+  expected: "🧑🏾‍🤝‍🧑🏿",
+  actual: "🧑🏾🤝🧑🏿"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏻",
+  actual: "🧑🏿🤝🧑🏻"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏼",
+  actual: "🧑🏿🤝🧑🏼"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏽",
+  actual: "🧑🏿🤝🧑🏽"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏾",
+  actual: "🧑🏿🤝🧑🏾"
+}, {
+  expected: "🧑🏿‍🤝‍🧑🏿",
+  actual: "🧑🏿🤝🧑🏿"
+}, {
+  expected: "👩🏻‍🤝‍👩🏼",
+  actual: "👩🏻🤝👩🏼"
+}, {
+  expected: "👩🏻‍🤝‍👩🏽",
+  actual: "👩🏻🤝👩🏽"
+}, {
+  expected: "👩🏻‍🤝‍👩🏾",
+  actual: "👩🏻🤝👩🏾"
+}, {
+  expected: "👩🏻‍🤝‍👩🏿",
+  actual: "👩🏻🤝👩🏿"
+}, {
+  expected: "👩🏼‍🤝‍👩🏻",
+  actual: "👩🏼🤝👩🏻"
+}, {
+  expected: "👩🏼‍🤝‍👩🏽",
+  actual: "👩🏼🤝👩🏽"
+}, {
+  expected: "👩🏼‍🤝‍👩🏾",
+  actual: "👩🏼🤝👩🏾"
+}, {
+  expected: "👩🏼‍🤝‍👩🏿",
+  actual: "👩🏼🤝👩🏿"
+}, {
+  expected: "👩🏽‍🤝‍👩🏻",
+  actual: "👩🏽🤝👩🏻"
+}, {
+  expected: "👩🏽‍🤝‍👩🏼",
+  actual: "👩🏽🤝👩🏼"
+}, {
+  expected: "👩🏽‍🤝‍👩🏾",
+  actual: "👩🏽🤝👩🏾"
+}, {
+  expected: "👩🏽‍🤝‍👩🏿",
+  actual: "👩🏽🤝👩🏿"
+}, {
+  expected: "👩🏾‍🤝‍👩🏻",
+  actual: "👩🏾🤝👩🏻"
+}, {
+  expected: "👩🏾‍🤝‍👩🏼",
+  actual: "👩🏾🤝👩🏼"
+}, {
+  expected: "👩🏾‍🤝‍👩🏽",
+  actual: "👩🏾🤝👩🏽"
+}, {
+  expected: "👩🏾‍🤝‍👩🏿",
+  actual: "👩🏾🤝👩🏿"
+}, {
+  expected: "👩🏿‍🤝‍👩🏻",
+  actual: "👩🏿🤝👩🏻"
+}, {
+  expected: "👩🏿‍🤝‍👩🏼",
+  actual: "👩🏿🤝👩🏼"
+}, {
+  expected: "👩🏿‍🤝‍👩🏽",
+  actual: "👩🏿🤝👩🏽"
+}, {
+  expected: "👩🏿‍🤝‍👩🏾",
+  actual: "👩🏿🤝👩🏾"
+}, {
+  expected: "👩🏻‍🤝‍👨🏼",
+  actual: "👩🏻🤝👨🏼"
+}, {
+  expected: "👩🏻‍🤝‍👨🏽",
+  actual: "👩🏻🤝👨🏽"
+}, {
+  expected: "👩🏻‍🤝‍👨🏾",
+  actual: "👩🏻🤝👨🏾"
+}, {
+  expected: "👩🏻‍🤝‍👨🏿",
+  actual: "👩🏻🤝👨🏿"
+}, {
+  expected: "👩🏼‍🤝‍👨🏻",
+  actual: "👩🏼🤝👨🏻"
+}, {
+  expected: "👩🏼‍🤝‍👨🏽",
+  actual: "👩🏼🤝👨🏽"
+}, {
+  expected: "👩🏼‍🤝‍👨🏾",
+  actual: "👩🏼🤝👨🏾"
+}, {
+  expected: "👩🏼‍🤝‍👨🏿",
+  actual: "👩🏼🤝👨🏿"
+}, {
+  expected: "👩🏽‍🤝‍👨🏻",
+  actual: "👩🏽🤝👨🏻"
+}, {
+  expected: "👩🏽‍🤝‍👨🏼",
+  actual: "👩🏽🤝👨🏼"
+}, {
+  expected: "👩🏽‍🤝‍👨🏾",
+  actual: "👩🏽🤝👨🏾"
+}, {
+  expected: "👩🏽‍🤝‍👨🏿",
+  actual: "👩🏽🤝👨🏿"
+}, {
+  expected: "👩🏾‍🤝‍👨🏻",
+  actual: "👩🏾🤝👨🏻"
+}, {
+  expected: "👩🏾‍🤝‍👨🏼",
+  actual: "👩🏾🤝👨🏼"
+}, {
+  expected: "👩🏾‍🤝‍👨🏽",
+  actual: "👩🏾🤝👨🏽"
+}, {
+  expected: "👩🏾‍🤝‍👨🏿",
+  actual: "👩🏾🤝👨🏿"
+}, {
+  expected: "👩🏿‍🤝‍👨🏻",
+  actual: "👩🏿🤝👨🏻"
+}, {
+  expected: "👩🏿‍🤝‍👨🏼",
+  actual: "👩🏿🤝👨🏼"
+}, {
+  expected: "👩🏿‍🤝‍👨🏽",
+  actual: "👩🏿🤝👨🏽"
+}, {
+  expected: "👩🏿‍🤝‍👨🏾",
+  actual: "👩🏿🤝👨🏾"
+}, {
+  expected: "👨🏻‍🤝‍👨🏼",
+  actual: "👨🏻🤝👨🏼"
+}, {
+  expected: "👨🏻‍🤝‍👨🏽",
+  actual: "👨🏻🤝👨🏽"
+}, {
+  expected: "👨🏻‍🤝‍👨🏾",
+  actual: "👨🏻🤝👨🏾"
+}, {
+  expected: "👨🏻‍🤝‍👨🏿",
+  actual: "👨🏻🤝👨🏿"
+}, {
+  expected: "👨🏼‍🤝‍👨🏻",
+  actual: "👨🏼🤝👨🏻"
+}, {
+  expected: "👨🏼‍🤝‍👨🏽",
+  actual: "👨🏼🤝👨🏽"
+}, {
+  expected: "👨🏼‍🤝‍👨🏾",
+  actual: "👨🏼🤝👨🏾"
+}, {
+  expected: "👨🏼‍🤝‍👨🏿",
+  actual: "👨🏼🤝👨🏿"
+}, {
+  expected: "👨🏽‍🤝‍👨🏻",
+  actual: "👨🏽🤝👨🏻"
+}, {
+  expected: "👨🏽‍🤝‍👨🏼",
+  actual: "👨🏽🤝👨🏼"
+}, {
+  expected: "👨🏽‍🤝‍👨🏾",
+  actual: "👨🏽🤝👨🏾"
+}, {
+  expected: "👨🏽‍🤝‍👨🏿",
+  actual: "👨🏽🤝👨🏿"
+}, {
+  expected: "👨🏾‍🤝‍👨🏻",
+  actual: "👨🏾🤝👨🏻"
+}, {
+  expected: "👨🏾‍🤝‍👨🏼",
+  actual: "👨🏾🤝👨🏼"
+}, {
+  expected: "👨🏾‍🤝‍👨🏽",
+  actual: "👨🏾🤝👨🏽"
+}, {
+  expected: "👨🏾‍🤝‍👨🏿",
+  actual: "👨🏾🤝👨🏿"
+}, {
+  expected: "👨🏿‍🤝‍👨🏻",
+  actual: "👨🏿🤝👨🏻"
+}, {
+  expected: "👨🏿‍🤝‍👨🏼",
+  actual: "👨🏿🤝👨🏼"
+}, {
+  expected: "👨🏿‍🤝‍👨🏽",
+  actual: "👨🏿🤝👨🏽"
+}, {
+  expected: "👨🏿‍🤝‍👨🏾",
+  actual: "👨🏿🤝👨🏾"
+}, {
+  expected: "👩‍❤️‍👨",
+  actual: "👩‍❤️‍👨"
+}, {
+  expected: "👨‍❤️‍👨",
+  actual: "👨‍❤️‍👨"
+}, {
+  expected: "👩‍❤️‍👩",
+  actual: "👩‍❤️‍👩"
+}, {
+  expected: "👨‍🦯‍➡️",
+  actual: "👨‍🦯‍➡️"
+}, {
+  expected: "👨‍🦼‍➡️",
+  actual: "👨‍🦼‍➡️"
+}, {
+  expected: "👨‍🦽‍➡️",
+  actual: "👨‍🦽‍➡️"
+}, {
+  expected: "👩‍🦯‍➡️",
+  actual: "👩‍🦯‍➡️"
+}, {
+  expected: "👩‍🦼‍➡️",
+  actual: "👩‍🦼‍➡️"
+}, {
+  expected: "👩‍🦽‍➡️",
+  actual: "👩‍🦽‍➡️"
+}, {
+  expected: "🧑‍🦯‍➡️",
+  actual: "🧑‍🦯‍➡️"
+}, {
+  expected: "🧑‍🦼‍➡️",
+  actual: "🧑‍🦼‍➡️"
+}, {
+  expected: "🧑‍🦽‍➡️",
+  actual: "🧑‍🦽‍➡️"
+}, {
+  expected: "🫱🏻‍🫲🏼",
+  actual: "🫱🏻‍🫲🏼"
+}, {
+  expected: "🫱🏻‍🫲🏽",
+  actual: "🫱🏻‍🫲🏽"
+}, {
+  expected: "🫱🏻‍🫲🏾",
+  actual: "🫱🏻‍🫲🏾"
+}, {
+  expected: "🫱🏻‍🫲🏿",
+  actual: "🫱🏻‍🫲🏿"
+}, {
+  expected: "🫱🏼‍🫲🏻",
+  actual: "🫱🏼‍🫲🏻"
+}, {
+  expected: "🫱🏼‍🫲🏽",
+  actual: "🫱🏼‍🫲🏽"
+}, {
+  expected: "🫱🏼‍🫲🏾",
+  actual: "🫱🏼‍🫲🏾"
+}, {
+  expected: "🫱🏼‍🫲🏿",
+  actual: "🫱🏼‍🫲🏿"
+}, {
+  expected: "🫱🏽‍🫲🏻",
+  actual: "🫱🏽‍🫲🏻"
+}, {
+  expected: "🫱🏽‍🫲🏼",
+  actual: "🫱🏽‍🫲🏼"
+}, {
+  expected: "🫱🏽‍🫲🏾",
+  actual: "🫱🏽‍🫲🏾"
+}, {
+  expected: "🫱🏽‍🫲🏿",
+  actual: "🫱🏽‍🫲🏿"
+}, {
+  expected: "🫱🏾‍🫲🏻",
+  actual: "🫱🏾‍🫲🏻"
+}, {
+  expected: "🫱🏾‍🫲🏼",
+  actual: "🫱🏾‍🫲🏼"
+}, {
+  expected: "🫱🏾‍🫲🏽",
+  actual: "🫱🏾‍🫲🏽"
+}, {
+  expected: "🫱🏾‍🫲🏿",
+  actual: "🫱🏾‍🫲🏿"
+}, {
+  expected: "🫱🏿‍🫲🏻",
+  actual: "🫱🏿‍🫲🏻"
+}, {
+  expected: "🫱🏿‍🫲🏼",
+  actual: "🫱🏿‍🫲🏼"
+}, {
+  expected: "🫱🏿‍🫲🏽",
+  actual: "🫱🏿‍🫲🏽"
+}, {
+  expected: "🫱🏿‍🫲🏾",
+  actual: "🫱🏿‍🫲🏾"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏼",
+  actual: "🧑🏻❤🧑🏼"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏽",
+  actual: "🧑🏻❤🧑🏽"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏾",
+  actual: "🧑🏻❤🧑🏾"
+}, {
+  expected: "🧑🏻‍❤️‍🧑🏿",
+  actual: "🧑🏻❤🧑🏿"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏻",
+  actual: "🧑🏼❤🧑🏻"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏽",
+  actual: "🧑🏼❤🧑🏽"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏾",
+  actual: "🧑🏼❤🧑🏾"
+}, {
+  expected: "🧑🏼‍❤️‍🧑🏿",
+  actual: "🧑🏼❤🧑🏿"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏻",
+  actual: "🧑🏽❤🧑🏻"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏼",
+  actual: "🧑🏽❤🧑🏼"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏾",
+  actual: "🧑🏽❤🧑🏾"
+}, {
+  expected: "🧑🏽‍❤️‍🧑🏿",
+  actual: "🧑🏽❤🧑🏿"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏻",
+  actual: "🧑🏾❤🧑🏻"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏼",
+  actual: "🧑🏾❤🧑🏼"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏽",
+  actual: "🧑🏾❤🧑🏽"
+}, {
+  expected: "🧑🏾‍❤️‍🧑🏿",
+  actual: "🧑🏾❤🧑🏿"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏻",
+  actual: "🧑🏿❤🧑🏻"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏼",
+  actual: "🧑🏿❤🧑🏼"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏽",
+  actual: "🧑🏿❤🧑🏽"
+}, {
+  expected: "🧑🏿‍❤️‍🧑🏾",
+  actual: "🧑🏿❤🧑🏾"
+}, {
+  expected: "👩🏻‍❤️‍👨🏻",
+  actual: "👩🏻❤👨🏻"
+}, {
+  expected: "👩🏻‍❤️‍👨🏼",
+  actual: "👩🏻❤👨🏼"
+}, {
+  expected: "👩🏻‍❤️‍👨🏽",
+  actual: "👩🏻❤👨🏽"
+}, {
+  expected: "👩🏻‍❤️‍👨🏾",
+  actual: "👩🏻❤👨🏾"
+}, {
+  expected: "👩🏻‍❤️‍👨🏿",
+  actual: "👩🏻❤👨🏿"
+}, {
+  expected: "👩🏼‍❤️‍👨🏻",
+  actual: "👩🏼❤👨🏻"
+}, {
+  expected: "👩🏼‍❤️‍👨🏼",
+  actual: "👩🏼❤👨🏼"
+}, {
+  expected: "👩🏼‍❤️‍👨🏽",
+  actual: "👩🏼❤👨🏽"
+}, {
+  expected: "👩🏼‍❤️‍👨🏾",
+  actual: "👩🏼❤👨🏾"
+}, {
+  expected: "👩🏼‍❤️‍👨🏿",
+  actual: "👩🏼❤👨🏿"
+}, {
+  expected: "👩🏽‍❤️‍👨🏻",
+  actual: "👩🏽❤👨🏻"
+}, {
+  expected: "👩🏽‍❤️‍👨🏼",
+  actual: "👩🏽❤👨🏼"
+}, {
+  expected: "👩🏽‍❤️‍👨🏽",
+  actual: "👩🏽❤👨🏽"
+}, {
+  expected: "👩🏽‍❤️‍👨🏾",
+  actual: "👩🏽❤👨🏾"
+}, {
+  expected: "👩🏽‍❤️‍👨🏿",
+  actual: "👩🏽❤👨🏿"
+}, {
+  expected: "👩🏾‍❤️‍👨🏻",
+  actual: "👩🏾❤👨🏻"
+}, {
+  expected: "👩🏾‍❤️‍👨🏼",
+  actual: "👩🏾❤👨🏼"
+}, {
+  expected: "👩🏾‍❤️‍👨🏽",
+  actual: "👩🏾❤👨🏽"
+}, {
+  expected: "👩🏾‍❤️‍👨🏾",
+  actual: "👩🏾❤👨🏾"
+}, {
+  expected: "👩🏾‍❤️‍👨🏿",
+  actual: "👩🏾❤👨🏿"
+}, {
+  expected: "👩🏿‍❤️‍👨🏻",
+  actual: "👩🏿❤👨🏻"
+}, {
+  expected: "👩🏿‍❤️‍👨🏼",
+  actual: "👩🏿❤👨🏼"
+}, {
+  expected: "👩🏿‍❤️‍👨🏽",
+  actual: "👩🏿❤👨🏽"
+}, {
+  expected: "👩🏿‍❤️‍👨🏾",
+  actual: "👩🏿❤👨🏾"
+}, {
+  expected: "👩🏿‍❤️‍👨🏿",
+  actual: "👩🏿❤👨🏿"
+}, {
+  expected: "👨🏻‍❤️‍👨🏻",
+  actual: "👨🏻❤👨🏻"
+}, {
+  expected: "👨🏻‍❤️‍👨🏼",
+  actual: "👨🏻❤👨🏼"
+}, {
+  expected: "👨🏻‍❤️‍👨🏽",
+  actual: "👨🏻❤👨🏽"
+}, {
+  expected: "👨🏻‍❤️‍👨🏾",
+  actual: "👨🏻❤👨🏾"
+}, {
+  expected: "👨🏻‍❤️‍👨🏿",
+  actual: "👨🏻❤👨🏿"
+}, {
+  expected: "👨🏼‍❤️‍👨🏻",
+  actual: "👨🏼❤👨🏻"
+}, {
+  expected: "👨🏼‍❤️‍👨🏼",
+  actual: "👨🏼❤👨🏼"
+}, {
+  expected: "👨🏼‍❤️‍👨🏽",
+  actual: "👨🏼❤👨🏽"
+}, {
+  expected: "👨🏼‍❤️‍👨🏾",
+  actual: "👨🏼❤👨🏾"
+}, {
+  expected: "👨🏼‍❤️‍👨🏿",
+  actual: "👨🏼❤👨🏿"
+}, {
+  expected: "👨🏽‍❤️‍👨🏻",
+  actual: "👨🏽❤👨🏻"
+}, {
+  expected: "👨🏽‍❤️‍👨🏼",
+  actual: "👨🏽❤👨🏼"
+}, {
+  expected: "👨🏽‍❤️‍👨🏽",
+  actual: "👨🏽❤👨🏽"
+}, {
+  expected: "👨🏽‍❤️‍👨🏾",
+  actual: "👨🏽❤👨🏾"
+}, {
+  expected: "👨🏽‍❤️‍👨🏿",
+  actual: "👨🏽❤👨🏿"
+}, {
+  expected: "👨🏾‍❤️‍👨🏻",
+  actual: "👨🏾❤👨🏻"
+}, {
+  expected: "👨🏾‍❤️‍👨🏼",
+  actual: "👨🏾❤👨🏼"
+}, {
+  expected: "👨🏾‍❤️‍👨🏽",
+  actual: "👨🏾❤👨🏽"
+}, {
+  expected: "👨🏾‍❤️‍👨🏾",
+  actual: "👨🏾❤👨🏾"
+}, {
+  expected: "👨🏾‍❤️‍👨🏿",
+  actual: "👨🏾❤👨🏿"
+}, {
+  expected: "👨🏿‍❤️‍👨🏻",
+  actual: "👨🏿❤👨🏻"
+}, {
+  expected: "👨🏿‍❤️‍👨🏼",
+  actual: "👨🏿❤👨🏼"
+}, {
+  expected: "👨🏿‍❤️‍👨🏽",
+  actual: "👨🏿❤👨🏽"
+}, {
+  expected: "👨🏿‍❤️‍👨🏾",
+  actual: "👨🏿❤👨🏾"
+}, {
+  expected: "👨🏿‍❤️‍👨🏿",
+  actual: "👨🏿❤👨🏿"
+}, {
+  expected: "👩🏻‍❤️‍👩🏻",
+  actual: "👩🏻❤👩🏻"
+}, {
+  expected: "👩🏻‍❤️‍👩🏼",
+  actual: "👩🏻❤👩🏼"
+}, {
+  expected: "👩🏻‍❤️‍👩🏽",
+  actual: "👩🏻❤👩🏽"
+}, {
+  expected: "👩🏻‍❤️‍👩🏾",
+  actual: "👩🏻❤👩🏾"
+}, {
+  expected: "👩🏻‍❤️‍👩🏿",
+  actual: "👩🏻❤👩🏿"
+}, {
+  expected: "👩🏼‍❤️‍👩🏻",
+  actual: "👩🏼❤👩🏻"
+}, {
+  expected: "👩🏼‍❤️‍👩🏼",
+  actual: "👩🏼❤👩🏼"
+}, {
+  expected: "👩🏼‍❤️‍👩🏽",
+  actual: "👩🏼❤👩🏽"
+}, {
+  expected: "👩🏼‍❤️‍👩🏾",
+  actual: "👩🏼❤👩🏾"
+}, {
+  expected: "👩🏼‍❤️‍👩🏿",
+  actual: "👩🏼❤👩🏿"
+}, {
+  expected: "👩🏽‍❤️‍👩🏻",
+  actual: "👩🏽❤👩🏻"
+}, {
+  expected: "👩🏽‍❤️‍👩🏼",
+  actual: "👩🏽❤👩🏼"
+}, {
+  expected: "👩🏽‍❤️‍👩🏽",
+  actual: "👩🏽❤👩🏽"
+}, {
+  expected: "👩🏽‍❤️‍👩🏾",
+  actual: "👩🏽❤👩🏾"
+}, {
+  expected: "👩🏽‍❤️‍👩🏿",
+  actual: "👩🏽❤👩🏿"
+}, {
+  expected: "👩🏾‍❤️‍👩🏻",
+  actual: "👩🏾❤👩🏻"
+}, {
+  expected: "👩🏾‍❤️‍👩🏼",
+  actual: "👩🏾❤👩🏼"
+}, {
+  expected: "👩🏾‍❤️‍👩🏽",
+  actual: "👩🏾❤👩🏽"
+}, {
+  expected: "👩🏾‍❤️‍👩🏾",
+  actual: "👩🏾❤👩🏾"
+}, {
+  expected: "👩🏾‍❤️‍👩🏿",
+  actual: "👩🏾❤👩🏿"
+}, {
+  expected: "👩🏿‍❤️‍👩🏻",
+  actual: "👩🏿❤👩🏻"
+}, {
+  expected: "👩🏿‍❤️‍👩🏼",
+  actual: "👩🏿❤👩🏼"
+}, {
+  expected: "👩🏿‍❤️‍👩🏽",
+  actual: "👩🏿❤👩🏽"
+}, {
+  expected: "👩🏿‍❤️‍👩🏾",
+  actual: "👩🏿❤👩🏾"
+}, {
+  expected: "👩🏿‍❤️‍👩🏿",
+  actual: "👩🏿❤👩🏿"
+}, {
+  expected: "🧑‍🤝‍🧑",
+  actual: "🧑‍🤝‍🧑"
+}, {
+  expected: "👨‍👩‍👦",
+  actual: "👨‍👩‍👦"
+}, {
+  expected: "👨‍👩‍👧",
+  actual: "👨‍👩‍👧"
+}, {
+  expected: "👨‍👨‍👦",
+  actual: "👨‍👨‍👦"
+}, {
+  expected: "👨‍👨‍👧",
+  actual: "👨‍👨‍👧"
+}, {
+  expected: "👩‍👩‍👦",
+  actual: "👩‍👩‍👦"
+}, {
+  expected: "👩‍👩‍👧",
+  actual: "👩‍👩‍👧"
+}, {
+  expected: "👨‍👦‍👦",
+  actual: "👨‍👦‍👦"
+}, {
+  expected: "👨‍👧‍👦",
+  actual: "👨‍👧‍👦"
+}, {
+  expected: "👨‍👧‍👧",
+  actual: "👨‍👧‍👧"
+}, {
+  expected: "👩‍👦‍👦",
+  actual: "👩‍👦‍👦"
+}, {
+  expected: "👩‍👧‍👦",
+  actual: "👩‍👧‍👦"
+}, {
+  expected: "👩‍👧‍👧",
+  actual: "👩‍👧‍👧"
+}, {
+  expected: "🧑‍🧑‍🧒",
+  actual: "🧑‍🧑‍🧒"
+}, {
+  expected: "🧑‍🧒‍🧒",
+  actual: "🧑‍🧒‍🧒"
+}, {
+  expected: "👁️‍🗨️",
+  actual: "👁️‍🗨️"
+}, {
+  expected: "🧔🏻‍♂️",
+  actual: "🧔🏻‍♂️"
+}, {
+  expected: "🧔🏼‍♂️",
+  actual: "🧔🏼‍♂️"
+}, {
+  expected: "🧔🏽‍♂️",
+  actual: "🧔🏽‍♂️"
+}, {
+  expected: "🧔🏾‍♂️",
+  actual: "🧔🏾‍♂️"
+}, {
+  expected: "🧔🏿‍♂️",
+  actual: "🧔🏿‍♂️"
+}, {
+  expected: "🧔🏻‍♀️",
+  actual: "🧔🏻‍♀️"
+}, {
+  expected: "🧔🏼‍♀️",
+  actual: "🧔🏼‍♀️"
+}, {
+  expected: "🧔🏽‍♀️",
+  actual: "🧔🏽‍♀️"
+}, {
+  expected: "🧔🏾‍♀️",
+  actual: "🧔🏾‍♀️"
+}, {
+  expected: "🧔🏿‍♀️",
+  actual: "🧔🏿‍♀️"
+}, {
+  expected: "👱🏻‍♀️",
+  actual: "👱🏻‍♀️"
+}, {
+  expected: "👱🏼‍♀️",
+  actual: "👱🏼‍♀️"
+}, {
+  expected: "👱🏽‍♀️",
+  actual: "👱🏽‍♀️"
+}, {
+  expected: "👱🏾‍♀️",
+  actual: "👱🏾‍♀️"
+}, {
+  expected: "👱🏿‍♀️",
+  actual: "👱🏿‍♀️"
+}, {
+  expected: "👱🏻‍♂️",
+  actual: "👱🏻‍♂️"
+}, {
+  expected: "👱🏼‍♂️",
+  actual: "👱🏼‍♂️"
+}, {
+  expected: "👱🏽‍♂️",
+  actual: "👱🏽‍♂️"
+}, {
+  expected: "👱🏾‍♂️",
+  actual: "👱🏾‍♂️"
+}, {
+  expected: "👱🏿‍♂️",
+  actual: "👱🏿‍♂️"
+}, {
+  expected: "🙍🏻‍♂️",
+  actual: "🙍🏻‍♂️"
+}, {
+  expected: "🙍🏼‍♂️",
+  actual: "🙍🏼‍♂️"
+}, {
+  expected: "🙍🏽‍♂️",
+  actual: "🙍🏽‍♂️"
+}, {
+  expected: "🙍🏾‍♂️",
+  actual: "🙍🏾‍♂️"
+}, {
+  expected: "🙍🏿‍♂️",
+  actual: "🙍🏿‍♂️"
+}, {
+  expected: "🙍🏻‍♀️",
+  actual: "🙍🏻‍♀️"
+}, {
+  expected: "🙍🏼‍♀️",
+  actual: "🙍🏼‍♀️"
+}, {
+  expected: "🙍🏽‍♀️",
+  actual: "🙍🏽‍♀️"
+}, {
+  expected: "🙍🏾‍♀️",
+  actual: "🙍🏾‍♀️"
+}, {
+  expected: "🙍🏿‍♀️",
+  actual: "🙍🏿‍♀️"
+}, {
+  expected: "🙎🏻‍♂️",
+  actual: "🙎🏻‍♂️"
+}, {
+  expected: "🙎🏼‍♂️",
+  actual: "🙎🏼‍♂️"
+}, {
+  expected: "🙎🏽‍♂️",
+  actual: "🙎🏽‍♂️"
+}, {
+  expected: "🙎🏾‍♂️",
+  actual: "🙎🏾‍♂️"
+}, {
+  expected: "🙎🏿‍♂️",
+  actual: "🙎🏿‍♂️"
+}, {
+  expected: "🙎🏻‍♀️",
+  actual: "🙎🏻‍♀️"
+}, {
+  expected: "🙎🏼‍♀️",
+  actual: "🙎🏼‍♀️"
+}, {
+  expected: "🙎🏽‍♀️",
+  actual: "🙎🏽‍♀️"
+}, {
+  expected: "🙎🏾‍♀️",
+  actual: "🙎🏾‍♀️"
+}, {
+  expected: "🙎🏿‍♀️",
+  actual: "🙎🏿‍♀️"
+}, {
+  expected: "🙅🏻‍♂️",
+  actual: "🙅🏻‍♂️"
+}, {
+  expected: "🙅🏼‍♂️",
+  actual: "🙅🏼‍♂️"
+}, {
+  expected: "🙅🏽‍♂️",
+  actual: "🙅🏽‍♂️"
+}, {
+  expected: "🙅🏾‍♂️",
+  actual: "🙅🏾‍♂️"
+}, {
+  expected: "🙅🏿‍♂️",
+  actual: "🙅🏿‍♂️"
+}, {
+  expected: "🙅🏻‍♀️",
+  actual: "🙅🏻‍♀️"
+}, {
+  expected: "🙅🏼‍♀️",
+  actual: "🙅🏼‍♀️"
+}, {
+  expected: "🙅🏽‍♀️",
+  actual: "🙅🏽‍♀️"
+}, {
+  expected: "🙅🏾‍♀️",
+  actual: "🙅🏾‍♀️"
+}, {
+  expected: "🙅🏿‍♀️",
+  actual: "🙅🏿‍♀️"
+}, {
+  expected: "🙆🏻‍♂️",
+  actual: "🙆🏻‍♂️"
+}, {
+  expected: "🙆🏼‍♂️",
+  actual: "🙆🏼‍♂️"
+}, {
+  expected: "🙆🏽‍♂️",
+  actual: "🙆🏽‍♂️"
+}, {
+  expected: "🙆🏾‍♂️",
+  actual: "🙆🏾‍♂️"
+}, {
+  expected: "🙆🏿‍♂️",
+  actual: "🙆🏿‍♂️"
+}, {
+  expected: "🙆🏻‍♀️",
+  actual: "🙆🏻‍♀️"
+}, {
+  expected: "🙆🏼‍♀️",
+  actual: "🙆🏼‍♀️"
+}, {
+  expected: "🙆🏽‍♀️",
+  actual: "🙆🏽‍♀️"
+}, {
+  expected: "🙆🏾‍♀️",
+  actual: "🙆🏾‍♀️"
+}, {
+  expected: "🙆🏿‍♀️",
+  actual: "🙆🏿‍♀️"
+}, {
+  expected: "💁🏻‍♂️",
+  actual: "💁🏻‍♂️"
+}, {
+  expected: "💁🏼‍♂️",
+  actual: "💁🏼‍♂️"
+}, {
+  expected: "💁🏽‍♂️",
+  actual: "💁🏽‍♂️"
+}, {
+  expected: "💁🏾‍♂️",
+  actual: "💁🏾‍♂️"
+}, {
+  expected: "💁🏿‍♂️",
+  actual: "💁🏿‍♂️"
+}, {
+  expected: "💁🏻‍♀️",
+  actual: "💁🏻‍♀️"
+}, {
+  expected: "💁🏼‍♀️",
+  actual: "💁🏼‍♀️"
+}, {
+  expected: "💁🏽‍♀️",
+  actual: "💁🏽‍♀️"
+}, {
+  expected: "💁🏾‍♀️",
+  actual: "💁🏾‍♀️"
+}, {
+  expected: "💁🏿‍♀️",
+  actual: "💁🏿‍♀️"
+}, {
+  expected: "🙋🏻‍♂️",
+  actual: "🙋🏻‍♂️"
+}, {
+  expected: "🙋🏼‍♂️",
+  actual: "🙋🏼‍♂️"
+}, {
+  expected: "🙋🏽‍♂️",
+  actual: "🙋🏽‍♂️"
+}, {
+  expected: "🙋🏾‍♂️",
+  actual: "🙋🏾‍♂️"
+}, {
+  expected: "🙋🏿‍♂️",
+  actual: "🙋🏿‍♂️"
+}, {
+  expected: "🙋🏻‍♀️",
+  actual: "🙋🏻‍♀️"
+}, {
+  expected: "🙋🏼‍♀️",
+  actual: "🙋🏼‍♀️"
+}, {
+  expected: "🙋🏽‍♀️",
+  actual: "🙋🏽‍♀️"
+}, {
+  expected: "🙋🏾‍♀️",
+  actual: "🙋🏾‍♀️"
+}, {
+  expected: "🙋🏿‍♀️",
+  actual: "🙋🏿‍♀️"
+}, {
+  expected: "🧏🏻‍♂️",
+  actual: "🧏🏻‍♂️"
+}, {
+  expected: "🧏🏼‍♂️",
+  actual: "🧏🏼‍♂️"
+}, {
+  expected: "🧏🏽‍♂️",
+  actual: "🧏🏽‍♂️"
+}, {
+  expected: "🧏🏾‍♂️",
+  actual: "🧏🏾‍♂️"
+}, {
+  expected: "🧏🏿‍♂️",
+  actual: "🧏🏿‍♂️"
+}, {
+  expected: "🧏🏻‍♀️",
+  actual: "🧏🏻‍♀️"
+}, {
+  expected: "🧏🏼‍♀️",
+  actual: "🧏🏼‍♀️"
+}, {
+  expected: "🧏🏽‍♀️",
+  actual: "🧏🏽‍♀️"
+}, {
+  expected: "🧏🏾‍♀️",
+  actual: "🧏🏾‍♀️"
+}, {
+  expected: "🧏🏿‍♀️",
+  actual: "🧏🏿‍♀️"
+}, {
+  expected: "🙇🏻‍♂️",
+  actual: "🙇🏻‍♂️"
+}, {
+  expected: "🙇🏼‍♂️",
+  actual: "🙇🏼‍♂️"
+}, {
+  expected: "🙇🏽‍♂️",
+  actual: "🙇🏽‍♂️"
+}, {
+  expected: "🙇🏾‍♂️",
+  actual: "🙇🏾‍♂️"
+}, {
+  expected: "🙇🏿‍♂️",
+  actual: "🙇🏿‍♂️"
+}, {
+  expected: "🙇🏻‍♀️",
+  actual: "🙇🏻‍♀️"
+}, {
+  expected: "🙇🏼‍♀️",
+  actual: "🙇🏼‍♀️"
+}, {
+  expected: "🙇🏽‍♀️",
+  actual: "🙇🏽‍♀️"
+}, {
+  expected: "🙇🏾‍♀️",
+  actual: "🙇🏾‍♀️"
+}, {
+  expected: "🙇🏿‍♀️",
+  actual: "🙇🏿‍♀️"
+}, {
+  expected: "🤦🏻‍♂️",
+  actual: "🤦🏻‍♂️"
+}, {
+  expected: "🤦🏼‍♂️",
+  actual: "🤦🏼‍♂️"
+}, {
+  expected: "🤦🏽‍♂️",
+  actual: "🤦🏽‍♂️"
+}, {
+  expected: "🤦🏾‍♂️",
+  actual: "🤦🏾‍♂️"
+}, {
+  expected: "🤦🏿‍♂️",
+  actual: "🤦🏿‍♂️"
+}, {
+  expected: "🤦🏻‍♀️",
+  actual: "🤦🏻‍♀️"
+}, {
+  expected: "🤦🏼‍♀️",
+  actual: "🤦🏼‍♀️"
+}, {
+  expected: "🤦🏽‍♀️",
+  actual: "🤦🏽‍♀️"
+}, {
+  expected: "🤦🏾‍♀️",
+  actual: "🤦🏾‍♀️"
+}, {
+  expected: "🤦🏿‍♀️",
+  actual: "🤦🏿‍♀️"
+}, {
+  expected: "🤷🏻‍♂️",
+  actual: "🤷🏻‍♂️"
+}, {
+  expected: "🤷🏼‍♂️",
+  actual: "🤷🏼‍♂️"
+}, {
+  expected: "🤷🏽‍♂️",
+  actual: "🤷🏽‍♂️"
+}, {
+  expected: "🤷🏾‍♂️",
+  actual: "🤷🏾‍♂️"
+}, {
+  expected: "🤷🏿‍♂️",
+  actual: "🤷🏿‍♂️"
+}, {
+  expected: "🤷🏻‍♀️",
+  actual: "🤷🏻‍♀️"
+}, {
+  expected: "🤷🏼‍♀️",
+  actual: "🤷🏼‍♀️"
+}, {
+  expected: "🤷🏽‍♀️",
+  actual: "🤷🏽‍♀️"
+}, {
+  expected: "🤷🏾‍♀️",
+  actual: "🤷🏾‍♀️"
+}, {
+  expected: "🤷🏿‍♀️",
+  actual: "🤷🏿‍♀️"
+}, {
+  expected: "🧑🏻‍⚕️",
+  actual: "🧑🏻‍⚕️"
+}, {
+  expected: "🧑🏼‍⚕️",
+  actual: "🧑🏼‍⚕️"
+}, {
+  expected: "🧑🏽‍⚕️",
+  actual: "🧑🏽‍⚕️"
+}, {
+  expected: "🧑🏾‍⚕️",
+  actual: "🧑🏾‍⚕️"
+}, {
+  expected: "🧑🏿‍⚕️",
+  actual: "🧑🏿‍⚕️"
+}, {
+  expected: "👨🏻‍⚕️",
+  actual: "👨🏻‍⚕️"
+}, {
+  expected: "👨🏼‍⚕️",
+  actual: "👨🏼‍⚕️"
+}, {
+  expected: "👨🏽‍⚕️",
+  actual: "👨🏽‍⚕️"
+}, {
+  expected: "👨🏾‍⚕️",
+  actual: "👨🏾‍⚕️"
+}, {
+  expected: "👨🏿‍⚕️",
+  actual: "👨🏿‍⚕️"
+}, {
+  expected: "👩🏻‍⚕️",
+  actual: "👩🏻‍⚕️"
+}, {
+  expected: "👩🏼‍⚕️",
+  actual: "👩🏼‍⚕️"
+}, {
+  expected: "👩🏽‍⚕️",
+  actual: "👩🏽‍⚕️"
+}, {
+  expected: "👩🏾‍⚕️",
+  actual: "👩🏾‍⚕️"
+}, {
+  expected: "👩🏿‍⚕️",
+  actual: "👩🏿‍⚕️"
+}, {
+  expected: "🧑🏻‍⚖️",
+  actual: "🧑🏻‍⚖️"
+}, {
+  expected: "🧑🏼‍⚖️",
+  actual: "🧑🏼‍⚖️"
+}, {
+  expected: "🧑🏽‍⚖️",
+  actual: "🧑🏽‍⚖️"
+}, {
+  expected: "🧑🏾‍⚖️",
+  actual: "🧑🏾‍⚖️"
+}, {
+  expected: "🧑🏿‍⚖️",
+  actual: "🧑🏿‍⚖️"
+}, {
+  expected: "👨🏻‍⚖️",
+  actual: "👨🏻‍⚖️"
+}, {
+  expected: "👨🏼‍⚖️",
+  actual: "👨🏼‍⚖️"
+}, {
+  expected: "👨🏽‍⚖️",
+  actual: "👨🏽‍⚖️"
+}, {
+  expected: "👨🏾‍⚖️",
+  actual: "👨🏾‍⚖️"
+}, {
+  expected: "👨🏿‍⚖️",
+  actual: "👨🏿‍⚖️"
+}, {
+  expected: "👩🏻‍⚖️",
+  actual: "👩🏻‍⚖️"
+}, {
+  expected: "👩🏼‍⚖️",
+  actual: "👩🏼‍⚖️"
+}, {
+  expected: "👩🏽‍⚖️",
+  actual: "👩🏽‍⚖️"
+}, {
+  expected: "👩🏾‍⚖️",
+  actual: "👩🏾‍⚖️"
+}, {
+  expected: "👩🏿‍⚖️",
+  actual: "👩🏿‍⚖️"
+}, {
+  expected: "🧑🏻‍✈️",
+  actual: "🧑🏻‍✈️"
+}, {
+  expected: "🧑🏼‍✈️",
+  actual: "🧑🏼‍✈️"
+}, {
+  expected: "🧑🏽‍✈️",
+  actual: "🧑🏽‍✈️"
+}, {
+  expected: "🧑🏾‍✈️",
+  actual: "🧑🏾‍✈️"
+}, {
+  expected: "🧑🏿‍✈️",
+  actual: "🧑🏿‍✈️"
+}, {
+  expected: "👨🏻‍✈️",
+  actual: "👨🏻‍✈️"
+}, {
+  expected: "👨🏼‍✈️",
+  actual: "👨🏼‍✈️"
+}, {
+  expected: "👨🏽‍✈️",
+  actual: "👨🏽‍✈️"
+}, {
+  expected: "👨🏾‍✈️",
+  actual: "👨🏾‍✈️"
+}, {
+  expected: "👨🏿‍✈️",
+  actual: "👨🏿‍✈️"
+}, {
+  expected: "👩🏻‍✈️",
+  actual: "👩🏻‍✈️"
+}, {
+  expected: "👩🏼‍✈️",
+  actual: "👩🏼‍✈️"
+}, {
+  expected: "👩🏽‍✈️",
+  actual: "👩🏽‍✈️"
+}, {
+  expected: "👩🏾‍✈️",
+  actual: "👩🏾‍✈️"
+}, {
+  expected: "👩🏿‍✈️",
+  actual: "👩🏿‍✈️"
+}, {
+  expected: "👮🏻‍♂️",
+  actual: "👮🏻‍♂️"
+}, {
+  expected: "👮🏼‍♂️",
+  actual: "👮🏼‍♂️"
+}, {
+  expected: "👮🏽‍♂️",
+  actual: "👮🏽‍♂️"
+}, {
+  expected: "👮🏾‍♂️",
+  actual: "👮🏾‍♂️"
+}, {
+  expected: "👮🏿‍♂️",
+  actual: "👮🏿‍♂️"
+}, {
+  expected: "👮🏻‍♀️",
+  actual: "👮🏻‍♀️"
+}, {
+  expected: "👮🏼‍♀️",
+  actual: "👮🏼‍♀️"
+}, {
+  expected: "👮🏽‍♀️",
+  actual: "👮🏽‍♀️"
+}, {
+  expected: "👮🏾‍♀️",
+  actual: "👮🏾‍♀️"
+}, {
+  expected: "👮🏿‍♀️",
+  actual: "👮🏿‍♀️"
+}, {
+  expected: "🕵🏻‍♂️",
+  actual: "🕵🏻‍♂️"
+}, {
+  expected: "🕵🏼‍♂️",
+  actual: "🕵🏼‍♂️"
+}, {
+  expected: "🕵🏽‍♂️",
+  actual: "🕵🏽‍♂️"
+}, {
+  expected: "🕵🏾‍♂️",
+  actual: "🕵🏾‍♂️"
+}, {
+  expected: "🕵🏿‍♂️",
+  actual: "🕵🏿‍♂️"
+}, {
+  expected: "🕵🏻‍♀️",
+  actual: "🕵🏻‍♀️"
+}, {
+  expected: "🕵🏼‍♀️",
+  actual: "🕵🏼‍♀️"
+}, {
+  expected: "🕵🏽‍♀️",
+  actual: "🕵🏽‍♀️"
+}, {
+  expected: "🕵🏾‍♀️",
+  actual: "🕵🏾‍♀️"
+}, {
+  expected: "🕵🏿‍♀️",
+  actual: "🕵🏿‍♀️"
+}, {
+  expected: "💂🏻‍♂️",
+  actual: "💂🏻‍♂️"
+}, {
+  expected: "💂🏼‍♂️",
+  actual: "💂🏼‍♂️"
+}, {
+  expected: "💂🏽‍♂️",
+  actual: "💂🏽‍♂️"
+}, {
+  expected: "💂🏾‍♂️",
+  actual: "💂🏾‍♂️"
+}, {
+  expected: "💂🏿‍♂️",
+  actual: "💂🏿‍♂️"
+}, {
+  expected: "💂🏻‍♀️",
+  actual: "💂🏻‍♀️"
+}, {
+  expected: "💂🏼‍♀️",
+  actual: "💂🏼‍♀️"
+}, {
+  expected: "💂🏽‍♀️",
+  actual: "💂🏽‍♀️"
+}, {
+  expected: "💂🏾‍♀️",
+  actual: "💂🏾‍♀️"
+}, {
+  expected: "💂🏿‍♀️",
+  actual: "💂🏿‍♀️"
+}, {
+  expected: "👷🏻‍♂️",
+  actual: "👷🏻‍♂️"
+}, {
+  expected: "👷🏼‍♂️",
+  actual: "👷🏼‍♂️"
+}, {
+  expected: "👷🏽‍♂️",
+  actual: "👷🏽‍♂️"
+}, {
+  expected: "👷🏾‍♂️",
+  actual: "👷🏾‍♂️"
+}, {
+  expected: "👷🏿‍♂️",
+  actual: "👷🏿‍♂️"
+}, {
+  expected: "👷🏻‍♀️",
+  actual: "👷🏻‍♀️"
+}, {
+  expected: "👷🏼‍♀️",
+  actual: "👷🏼‍♀️"
+}, {
+  expected: "👷🏽‍♀️",
+  actual: "👷🏽‍♀️"
+}, {
+  expected: "👷🏾‍♀️",
+  actual: "👷🏾‍♀️"
+}, {
+  expected: "👷🏿‍♀️",
+  actual: "👷🏿‍♀️"
+}, {
+  expected: "👳🏻‍♂️",
+  actual: "👳🏻‍♂️"
+}, {
+  expected: "👳🏼‍♂️",
+  actual: "👳🏼‍♂️"
+}, {
+  expected: "👳🏽‍♂️",
+  actual: "👳🏽‍♂️"
+}, {
+  expected: "👳🏾‍♂️",
+  actual: "👳🏾‍♂️"
+}, {
+  expected: "👳🏿‍♂️",
+  actual: "👳🏿‍♂️"
+}, {
+  expected: "👳🏻‍♀️",
+  actual: "👳🏻‍♀️"
+}, {
+  expected: "👳🏼‍♀️",
+  actual: "👳🏼‍♀️"
+}, {
+  expected: "👳🏽‍♀️",
+  actual: "👳🏽‍♀️"
+}, {
+  expected: "👳🏾‍♀️",
+  actual: "👳🏾‍♀️"
+}, {
+  expected: "👳🏿‍♀️",
+  actual: "👳🏿‍♀️"
+}, {
+  expected: "🤵🏻‍♂️",
+  actual: "🤵🏻‍♂️"
+}, {
+  expected: "🤵🏼‍♂️",
+  actual: "🤵🏼‍♂️"
+}, {
+  expected: "🤵🏽‍♂️",
+  actual: "🤵🏽‍♂️"
+}, {
+  expected: "🤵🏾‍♂️",
+  actual: "🤵🏾‍♂️"
+}, {
+  expected: "🤵🏿‍♂️",
+  actual: "🤵🏿‍♂️"
+}, {
+  expected: "🤵🏻‍♀️",
+  actual: "🤵🏻‍♀️"
+}, {
+  expected: "🤵🏼‍♀️",
+  actual: "🤵🏼‍♀️"
+}, {
+  expected: "🤵🏽‍♀️",
+  actual: "🤵🏽‍♀️"
+}, {
+  expected: "🤵🏾‍♀️",
+  actual: "🤵🏾‍♀️"
+}, {
+  expected: "🤵🏿‍♀️",
+  actual: "🤵🏿‍♀️"
+}, {
+  expected: "👰🏻‍♂️",
+  actual: "👰🏻‍♂️"
+}, {
+  expected: "👰🏼‍♂️",
+  actual: "👰🏼‍♂️"
+}, {
+  expected: "👰🏽‍♂️",
+  actual: "👰🏽‍♂️"
+}, {
+  expected: "👰🏾‍♂️",
+  actual: "👰🏾‍♂️"
+}, {
+  expected: "👰🏿‍♂️",
+  actual: "👰🏿‍♂️"
+}, {
+  expected: "👰🏻‍♀️",
+  actual: "👰🏻‍♀️"
+}, {
+  expected: "👰🏼‍♀️",
+  actual: "👰🏼‍♀️"
+}, {
+  expected: "👰🏽‍♀️",
+  actual: "👰🏽‍♀️"
+}, {
+  expected: "👰🏾‍♀️",
+  actual: "👰🏾‍♀️"
+}, {
+  expected: "👰🏿‍♀️",
+  actual: "👰🏿‍♀️"
+}, {
+  expected: "🦸🏻‍♂️",
+  actual: "🦸🏻‍♂️"
+}, {
+  expected: "🦸🏼‍♂️",
+  actual: "🦸🏼‍♂️"
+}, {
+  expected: "🦸🏽‍♂️",
+  actual: "🦸🏽‍♂️"
+}, {
+  expected: "🦸🏾‍♂️",
+  actual: "🦸🏾‍♂️"
+}, {
+  expected: "🦸🏿‍♂️",
+  actual: "🦸🏿‍♂️"
+}, {
+  expected: "🦸🏻‍♀️",
+  actual: "🦸🏻‍♀️"
+}, {
+  expected: "🦸🏼‍♀️",
+  actual: "🦸🏼‍♀️"
+}, {
+  expected: "🦸🏽‍♀️",
+  actual: "🦸🏽‍♀️"
+}, {
+  expected: "🦸🏾‍♀️",
+  actual: "🦸🏾‍♀️"
+}, {
+  expected: "🦸🏿‍♀️",
+  actual: "🦸🏿‍♀️"
+}, {
+  expected: "🦹🏻‍♂️",
+  actual: "🦹🏻‍♂️"
+}, {
+  expected: "🦹🏼‍♂️",
+  actual: "🦹🏼‍♂️"
+}, {
+  expected: "🦹🏽‍♂️",
+  actual: "🦹🏽‍♂️"
+}, {
+  expected: "🦹🏾‍♂️",
+  actual: "🦹🏾‍♂️"
+}, {
+  expected: "🦹🏿‍♂️",
+  actual: "🦹🏿‍♂️"
+}, {
+  expected: "🦹🏻‍♀️",
+  actual: "🦹🏻‍♀️"
+}, {
+  expected: "🦹🏼‍♀️",
+  actual: "🦹🏼‍♀️"
+}, {
+  expected: "🦹🏽‍♀️",
+  actual: "🦹🏽‍♀️"
+}, {
+  expected: "🦹🏾‍♀️",
+  actual: "🦹🏾‍♀️"
+}, {
+  expected: "🦹🏿‍♀️",
+  actual: "🦹🏿‍♀️"
+}, {
+  expected: "🧙🏻‍♂️",
+  actual: "🧙🏻‍♂️"
+}, {
+  expected: "🧙🏼‍♂️",
+  actual: "🧙🏼‍♂️"
+}, {
+  expected: "🧙🏽‍♂️",
+  actual: "🧙🏽‍♂️"
+}, {
+  expected: "🧙🏾‍♂️",
+  actual: "🧙🏾‍♂️"
+}, {
+  expected: "🧙🏿‍♂️",
+  actual: "🧙🏿‍♂️"
+}, {
+  expected: "🧙🏻‍♀️",
+  actual: "🧙🏻‍♀️"
+}, {
+  expected: "🧙🏼‍♀️",
+  actual: "🧙🏼‍♀️"
+}, {
+  expected: "🧙🏽‍♀️",
+  actual: "🧙🏽‍♀️"
+}, {
+  expected: "🧙🏾‍♀️",
+  actual: "🧙🏾‍♀️"
+}, {
+  expected: "🧙🏿‍♀️",
+  actual: "🧙🏿‍♀️"
+}, {
+  expected: "🧚🏻‍♂️",
+  actual: "🧚🏻‍♂️"
+}, {
+  expected: "🧚🏼‍♂️",
+  actual: "🧚🏼‍♂️"
+}, {
+  expected: "🧚🏽‍♂️",
+  actual: "🧚🏽‍♂️"
+}, {
+  expected: "🧚🏾‍♂️",
+  actual: "🧚🏾‍♂️"
+}, {
+  expected: "🧚🏿‍♂️",
+  actual: "🧚🏿‍♂️"
+}, {
+  expected: "🧚🏻‍♀️",
+  actual: "🧚🏻‍♀️"
+}, {
+  expected: "🧚🏼‍♀️",
+  actual: "🧚🏼‍♀️"
+}, {
+  expected: "🧚🏽‍♀️",
+  actual: "🧚🏽‍♀️"
+}, {
+  expected: "🧚🏾‍♀️",
+  actual: "🧚🏾‍♀️"
+}, {
+  expected: "🧚🏿‍♀️",
+  actual: "🧚🏿‍♀️"
+}, {
+  expected: "🧛🏻‍♂️",
+  actual: "🧛🏻‍♂️"
+}, {
+  expected: "🧛🏼‍♂️",
+  actual: "🧛🏼‍♂️"
+}, {
+  expected: "🧛🏽‍♂️",
+  actual: "🧛🏽‍♂️"
+}, {
+  expected: "🧛🏾‍♂️",
+  actual: "🧛🏾‍♂️"
+}, {
+  expected: "🧛🏿‍♂️",
+  actual: "🧛🏿‍♂️"
+}, {
+  expected: "🧛🏻‍♀️",
+  actual: "🧛🏻‍♀️"
+}, {
+  expected: "🧛🏼‍♀️",
+  actual: "🧛🏼‍♀️"
+}, {
+  expected: "🧛🏽‍♀️",
+  actual: "🧛🏽‍♀️"
+}, {
+  expected: "🧛🏾‍♀️",
+  actual: "🧛🏾‍♀️"
+}, {
+  expected: "🧛🏿‍♀️",
+  actual: "🧛🏿‍♀️"
+}, {
+  expected: "🧜🏻‍♂️",
+  actual: "🧜🏻‍♂️"
+}, {
+  expected: "🧜🏼‍♂️",
+  actual: "🧜🏼‍♂️"
+}, {
+  expected: "🧜🏽‍♂️",
+  actual: "🧜🏽‍♂️"
+}, {
+  expected: "🧜🏾‍♂️",
+  actual: "🧜🏾‍♂️"
+}, {
+  expected: "🧜🏿‍♂️",
+  actual: "🧜🏿‍♂️"
+}, {
+  expected: "🧜🏻‍♀️",
+  actual: "🧜🏻‍♀️"
+}, {
+  expected: "🧜🏼‍♀️",
+  actual: "🧜🏼‍♀️"
+}, {
+  expected: "🧜🏽‍♀️",
+  actual: "🧜🏽‍♀️"
+}, {
+  expected: "🧜🏾‍♀️",
+  actual: "🧜🏾‍♀️"
+}, {
+  expected: "🧜🏿‍♀️",
+  actual: "🧜🏿‍♀️"
+}, {
+  expected: "🧝🏻‍♂️",
+  actual: "🧝🏻‍♂️"
+}, {
+  expected: "🧝🏼‍♂️",
+  actual: "🧝🏼‍♂️"
+}, {
+  expected: "🧝🏽‍♂️",
+  actual: "🧝🏽‍♂️"
+}, {
+  expected: "🧝🏾‍♂️",
+  actual: "🧝🏾‍♂️"
+}, {
+  expected: "🧝🏿‍♂️",
+  actual: "🧝🏿‍♂️"
+}, {
+  expected: "🧝🏻‍♀️",
+  actual: "🧝🏻‍♀️"
+}, {
+  expected: "🧝🏼‍♀️",
+  actual: "🧝🏼‍♀️"
+}, {
+  expected: "🧝🏽‍♀️",
+  actual: "🧝🏽‍♀️"
+}, {
+  expected: "🧝🏾‍♀️",
+  actual: "🧝🏾‍♀️"
+}, {
+  expected: "🧝🏿‍♀️",
+  actual: "🧝🏿‍♀️"
+}, {
+  expected: "💆🏻‍♂️",
+  actual: "💆🏻‍♂️"
+}, {
+  expected: "💆🏼‍♂️",
+  actual: "💆🏼‍♂️"
+}, {
+  expected: "💆🏽‍♂️",
+  actual: "💆🏽‍♂️"
+}, {
+  expected: "💆🏾‍♂️",
+  actual: "💆🏾‍♂️"
+}, {
+  expected: "💆🏿‍♂️",
+  actual: "💆🏿‍♂️"
+}, {
+  expected: "💆🏻‍♀️",
+  actual: "💆🏻‍♀️"
+}, {
+  expected: "💆🏼‍♀️",
+  actual: "💆🏼‍♀️"
+}, {
+  expected: "💆🏽‍♀️",
+  actual: "💆🏽‍♀️"
+}, {
+  expected: "💆🏾‍♀️",
+  actual: "💆🏾‍♀️"
+}, {
+  expected: "💆🏿‍♀️",
+  actual: "💆🏿‍♀️"
+}, {
+  expected: "💇🏻‍♂️",
+  actual: "💇🏻‍♂️"
+}, {
+  expected: "💇🏼‍♂️",
+  actual: "💇🏼‍♂️"
+}, {
+  expected: "💇🏽‍♂️",
+  actual: "💇🏽‍♂️"
+}, {
+  expected: "💇🏾‍♂️",
+  actual: "💇🏾‍♂️"
+}, {
+  expected: "💇🏿‍♂️",
+  actual: "💇🏿‍♂️"
+}, {
+  expected: "💇🏻‍♀️",
+  actual: "💇🏻‍♀️"
+}, {
+  expected: "💇🏼‍♀️",
+  actual: "💇🏼‍♀️"
+}, {
+  expected: "💇🏽‍♀️",
+  actual: "💇🏽‍♀️"
+}, {
+  expected: "💇🏾‍♀️",
+  actual: "💇🏾‍♀️"
+}, {
+  expected: "💇🏿‍♀️",
+  actual: "💇🏿‍♀️"
+}, {
+  expected: "🚶🏻‍♂️",
+  actual: "🚶🏻‍♂️"
+}, {
+  expected: "🚶🏼‍♂️",
+  actual: "🚶🏼‍♂️"
+}, {
+  expected: "🚶🏽‍♂️",
+  actual: "🚶🏽‍♂️"
+}, {
+  expected: "🚶🏾‍♂️",
+  actual: "🚶🏾‍♂️"
+}, {
+  expected: "🚶🏿‍♂️",
+  actual: "🚶🏿‍♂️"
+}, {
+  expected: "🚶🏻‍♀️",
+  actual: "🚶🏻‍♀️"
+}, {
+  expected: "🚶🏼‍♀️",
+  actual: "🚶🏼‍♀️"
+}, {
+  expected: "🚶🏽‍♀️",
+  actual: "🚶🏽‍♀️"
+}, {
+  expected: "🚶🏾‍♀️",
+  actual: "🚶🏾‍♀️"
+}, {
+  expected: "🚶🏿‍♀️",
+  actual: "🚶🏿‍♀️"
+}, {
+  expected: "🧍🏻‍♂️",
+  actual: "🧍🏻‍♂️"
+}, {
+  expected: "🧍🏼‍♂️",
+  actual: "🧍🏼‍♂️"
+}, {
+  expected: "🧍🏽‍♂️",
+  actual: "🧍🏽‍♂️"
+}, {
+  expected: "🧍🏾‍♂️",
+  actual: "🧍🏾‍♂️"
+}, {
+  expected: "🧍🏿‍♂️",
+  actual: "🧍🏿‍♂️"
+}, {
+  expected: "🧍🏻‍♀️",
+  actual: "🧍🏻‍♀️"
+}, {
+  expected: "🧍🏼‍♀️",
+  actual: "🧍🏼‍♀️"
+}, {
+  expected: "🧍🏽‍♀️",
+  actual: "🧍🏽‍♀️"
+}, {
+  expected: "🧍🏾‍♀️",
+  actual: "🧍🏾‍♀️"
+}, {
+  expected: "🧍🏿‍♀️",
+  actual: "🧍🏿‍♀️"
+}, {
+  expected: "🧎🏻‍♂️",
+  actual: "🧎🏻‍♂️"
+}, {
+  expected: "🧎🏼‍♂️",
+  actual: "🧎🏼‍♂️"
+}, {
+  expected: "🧎🏽‍♂️",
+  actual: "🧎🏽‍♂️"
+}, {
+  expected: "🧎🏾‍♂️",
+  actual: "🧎🏾‍♂️"
+}, {
+  expected: "🧎🏿‍♂️",
+  actual: "🧎🏿‍♂️"
+}, {
+  expected: "🧎🏻‍♀️",
+  actual: "🧎🏻‍♀️"
+}, {
+  expected: "🧎🏼‍♀️",
+  actual: "🧎🏼‍♀️"
+}, {
+  expected: "🧎🏽‍♀️",
+  actual: "🧎🏽‍♀️"
+}, {
+  expected: "🧎🏾‍♀️",
+  actual: "🧎🏾‍♀️"
+}, {
+  expected: "🧎🏿‍♀️",
+  actual: "🧎🏿‍♀️"
+}, {
+  expected: "🏃🏻‍♂️",
+  actual: "🏃🏻‍♂️"
+}, {
+  expected: "🏃🏼‍♂️",
+  actual: "🏃🏼‍♂️"
+}, {
+  expected: "🏃🏽‍♂️",
+  actual: "🏃🏽‍♂️"
+}, {
+  expected: "🏃🏾‍♂️",
+  actual: "🏃🏾‍♂️"
+}, {
+  expected: "🏃🏿‍♂️",
+  actual: "🏃🏿‍♂️"
+}, {
+  expected: "🏃🏻‍♀️",
+  actual: "🏃🏻‍♀️"
+}, {
+  expected: "🏃🏼‍♀️",
+  actual: "🏃🏼‍♀️"
+}, {
+  expected: "🏃🏽‍♀️",
+  actual: "🏃🏽‍♀️"
+}, {
+  expected: "🏃🏾‍♀️",
+  actual: "🏃🏾‍♀️"
+}, {
+  expected: "🏃🏿‍♀️",
+  actual: "🏃🏿‍♀️"
+}, {
+  expected: "🧖🏻‍♂️",
+  actual: "🧖🏻‍♂️"
+}, {
+  expected: "🧖🏼‍♂️",
+  actual: "🧖🏼‍♂️"
+}, {
+  expected: "🧖🏽‍♂️",
+  actual: "🧖🏽‍♂️"
+}, {
+  expected: "🧖🏾‍♂️",
+  actual: "🧖🏾‍♂️"
+}, {
+  expected: "🧖🏿‍♂️",
+  actual: "🧖🏿‍♂️"
+}, {
+  expected: "🧖🏻‍♀️",
+  actual: "🧖🏻‍♀️"
+}, {
+  expected: "🧖🏼‍♀️",
+  actual: "🧖🏼‍♀️"
+}, {
+  expected: "🧖🏽‍♀️",
+  actual: "🧖🏽‍♀️"
+}, {
+  expected: "🧖🏾‍♀️",
+  actual: "🧖🏾‍♀️"
+}, {
+  expected: "🧖🏿‍♀️",
+  actual: "🧖🏿‍♀️"
+}, {
+  expected: "🧗🏻‍♂️",
+  actual: "🧗🏻‍♂️"
+}, {
+  expected: "🧗🏼‍♂️",
+  actual: "🧗🏼‍♂️"
+}, {
+  expected: "🧗🏽‍♂️",
+  actual: "🧗🏽‍♂️"
+}, {
+  expected: "🧗🏾‍♂️",
+  actual: "🧗🏾‍♂️"
+}, {
+  expected: "🧗🏿‍♂️",
+  actual: "🧗🏿‍♂️"
+}, {
+  expected: "🧗🏻‍♀️",
+  actual: "🧗🏻‍♀️"
+}, {
+  expected: "🧗🏼‍♀️",
+  actual: "🧗🏼‍♀️"
+}, {
+  expected: "🧗🏽‍♀️",
+  actual: "🧗🏽‍♀️"
+}, {
+  expected: "🧗🏾‍♀️",
+  actual: "🧗🏾‍♀️"
+}, {
+  expected: "🧗🏿‍♀️",
+  actual: "🧗🏿‍♀️"
+}, {
+  expected: "🏌🏻‍♂️",
+  actual: "🏌🏻‍♂️"
+}, {
+  expected: "🏌🏼‍♂️",
+  actual: "🏌🏼‍♂️"
+}, {
+  expected: "🏌🏽‍♂️",
+  actual: "🏌🏽‍♂️"
+}, {
+  expected: "🏌🏾‍♂️",
+  actual: "🏌🏾‍♂️"
+}, {
+  expected: "🏌🏿‍♂️",
+  actual: "🏌🏿‍♂️"
+}, {
+  expected: "🏌🏻‍♀️",
+  actual: "🏌🏻‍♀️"
+}, {
+  expected: "🏌🏼‍♀️",
+  actual: "🏌🏼‍♀️"
+}, {
+  expected: "🏌🏽‍♀️",
+  actual: "🏌🏽‍♀️"
+}, {
+  expected: "🏌🏾‍♀️",
+  actual: "🏌🏾‍♀️"
+}, {
+  expected: "🏌🏿‍♀️",
+  actual: "🏌🏿‍♀️"
+}, {
+  expected: "🏄🏻‍♂️",
+  actual: "🏄🏻‍♂️"
+}, {
+  expected: "🏄🏼‍♂️",
+  actual: "🏄🏼‍♂️"
+}, {
+  expected: "🏄🏽‍♂️",
+  actual: "🏄🏽‍♂️"
+}, {
+  expected: "🏄🏾‍♂️",
+  actual: "🏄🏾‍♂️"
+}, {
+  expected: "🏄🏿‍♂️",
+  actual: "🏄🏿‍♂️"
+}, {
+  expected: "🏄🏻‍♀️",
+  actual: "🏄🏻‍♀️"
+}, {
+  expected: "🏄🏼‍♀️",
+  actual: "🏄🏼‍♀️"
+}, {
+  expected: "🏄🏽‍♀️",
+  actual: "🏄🏽‍♀️"
+}, {
+  expected: "🏄🏾‍♀️",
+  actual: "🏄🏾‍♀️"
+}, {
+  expected: "🏄🏿‍♀️",
+  actual: "🏄🏿‍♀️"
+}, {
+  expected: "🚣🏻‍♂️",
+  actual: "🚣🏻‍♂️"
+}, {
+  expected: "🚣🏼‍♂️",
+  actual: "🚣🏼‍♂️"
+}, {
+  expected: "🚣🏽‍♂️",
+  actual: "🚣🏽‍♂️"
+}, {
+  expected: "🚣🏾‍♂️",
+  actual: "🚣🏾‍♂️"
+}, {
+  expected: "🚣🏿‍♂️",
+  actual: "🚣🏿‍♂️"
+}, {
+  expected: "🚣🏻‍♀️",
+  actual: "🚣🏻‍♀️"
+}, {
+  expected: "🚣🏼‍♀️",
+  actual: "🚣🏼‍♀️"
+}, {
+  expected: "🚣🏽‍♀️",
+  actual: "🚣🏽‍♀️"
+}, {
+  expected: "🚣🏾‍♀️",
+  actual: "🚣🏾‍♀️"
+}, {
+  expected: "🚣🏿‍♀️",
+  actual: "🚣🏿‍♀️"
+}, {
+  expected: "🏊🏻‍♂️",
+  actual: "🏊🏻‍♂️"
+}, {
+  expected: "🏊🏼‍♂️",
+  actual: "🏊🏼‍♂️"
+}, {
+  expected: "🏊🏽‍♂️",
+  actual: "🏊🏽‍♂️"
+}, {
+  expected: "🏊🏾‍♂️",
+  actual: "🏊🏾‍♂️"
+}, {
+  expected: "🏊🏿‍♂️",
+  actual: "🏊🏿‍♂️"
+}, {
+  expected: "🏊🏻‍♀️",
+  actual: "🏊🏻‍♀️"
+}, {
+  expected: "🏊🏼‍♀️",
+  actual: "🏊🏼‍♀️"
+}, {
+  expected: "🏊🏽‍♀️",
+  actual: "🏊🏽‍♀️"
+}, {
+  expected: "🏊🏾‍♀️",
+  actual: "🏊🏾‍♀️"
+}, {
+  expected: "🏊🏿‍♀️",
+  actual: "🏊🏿‍♀️"
+}, {
+  expected: "🏋🏻‍♂️",
+  actual: "🏋🏻‍♂️"
+}, {
+  expected: "🏋🏼‍♂️",
+  actual: "🏋🏼‍♂️"
+}, {
+  expected: "🏋🏽‍♂️",
+  actual: "🏋🏽‍♂️"
+}, {
+  expected: "🏋🏾‍♂️",
+  actual: "🏋🏾‍♂️"
+}, {
+  expected: "🏋🏿‍♂️",
+  actual: "🏋🏿‍♂️"
+}, {
+  expected: "🏋🏻‍♀️",
+  actual: "🏋🏻‍♀️"
+}, {
+  expected: "🏋🏼‍♀️",
+  actual: "🏋🏼‍♀️"
+}, {
+  expected: "🏋🏽‍♀️",
+  actual: "🏋🏽‍♀️"
+}, {
+  expected: "🏋🏾‍♀️",
+  actual: "🏋🏾‍♀️"
+}, {
+  expected: "🏋🏿‍♀️",
+  actual: "🏋🏿‍♀️"
+}, {
+  expected: "🚴🏻‍♂️",
+  actual: "🚴🏻‍♂️"
+}, {
+  expected: "🚴🏼‍♂️",
+  actual: "🚴🏼‍♂️"
+}, {
+  expected: "🚴🏽‍♂️",
+  actual: "🚴🏽‍♂️"
+}, {
+  expected: "🚴🏾‍♂️",
+  actual: "🚴🏾‍♂️"
+}, {
+  expected: "🚴🏿‍♂️",
+  actual: "🚴🏿‍♂️"
+}, {
+  expected: "🚴🏻‍♀️",
+  actual: "🚴🏻‍♀️"
+}, {
+  expected: "🚴🏼‍♀️",
+  actual: "🚴🏼‍♀️"
+}, {
+  expected: "🚴🏽‍♀️",
+  actual: "🚴🏽‍♀️"
+}, {
+  expected: "🚴🏾‍♀️",
+  actual: "🚴🏾‍♀️"
+}, {
+  expected: "🚴🏿‍♀️",
+  actual: "🚴🏿‍♀️"
+}, {
+  expected: "🚵🏻‍♂️",
+  actual: "🚵🏻‍♂️"
+}, {
+  expected: "🚵🏼‍♂️",
+  actual: "🚵🏼‍♂️"
+}, {
+  expected: "🚵🏽‍♂️",
+  actual: "🚵🏽‍♂️"
+}, {
+  expected: "🚵🏾‍♂️",
+  actual: "🚵🏾‍♂️"
+}, {
+  expected: "🚵🏿‍♂️",
+  actual: "🚵🏿‍♂️"
+}, {
+  expected: "🚵🏻‍♀️",
+  actual: "🚵🏻‍♀️"
+}, {
+  expected: "🚵🏼‍♀️",
+  actual: "🚵🏼‍♀️"
+}, {
+  expected: "🚵🏽‍♀️",
+  actual: "🚵🏽‍♀️"
+}, {
+  expected: "🚵🏾‍♀️",
+  actual: "🚵🏾‍♀️"
+}, {
+  expected: "🚵🏿‍♀️",
+  actual: "🚵🏿‍♀️"
+}, {
+  expected: "🤸🏻‍♂️",
+  actual: "🤸🏻‍♂️"
+}, {
+  expected: "🤸🏼‍♂️",
+  actual: "🤸🏼‍♂️"
+}, {
+  expected: "🤸🏽‍♂️",
+  actual: "🤸🏽‍♂️"
+}, {
+  expected: "🤸🏾‍♂️",
+  actual: "🤸🏾‍♂️"
+}, {
+  expected: "🤸🏿‍♂️",
+  actual: "🤸🏿‍♂️"
+}, {
+  expected: "🤸🏻‍♀️",
+  actual: "🤸🏻‍♀️"
+}, {
+  expected: "🤸🏼‍♀️",
+  actual: "🤸🏼‍♀️"
+}, {
+  expected: "🤸🏽‍♀️",
+  actual: "🤸🏽‍♀️"
+}, {
+  expected: "🤸🏾‍♀️",
+  actual: "🤸🏾‍♀️"
+}, {
+  expected: "🤸🏿‍♀️",
+  actual: "🤸🏿‍♀️"
+}, {
+  expected: "🤽🏻‍♂️",
+  actual: "🤽🏻‍♂️"
+}, {
+  expected: "🤽🏼‍♂️",
+  actual: "🤽🏼‍♂️"
+}, {
+  expected: "🤽🏽‍♂️",
+  actual: "🤽🏽‍♂️"
+}, {
+  expected: "🤽🏾‍♂️",
+  actual: "🤽🏾‍♂️"
+}, {
+  expected: "🤽🏿‍♂️",
+  actual: "🤽🏿‍♂️"
+}, {
+  expected: "🤽🏻‍♀️",
+  actual: "🤽🏻‍♀️"
+}, {
+  expected: "🤽🏼‍♀️",
+  actual: "🤽🏼‍♀️"
+}, {
+  expected: "🤽🏽‍♀️",
+  actual: "🤽🏽‍♀️"
+}, {
+  expected: "🤽🏾‍♀️",
+  actual: "🤽🏾‍♀️"
+}, {
+  expected: "🤽🏿‍♀️",
+  actual: "🤽🏿‍♀️"
+}, {
+  expected: "🤾🏻‍♂️",
+  actual: "🤾🏻‍♂️"
+}, {
+  expected: "🤾🏼‍♂️",
+  actual: "🤾🏼‍♂️"
+}, {
+  expected: "🤾🏽‍♂️",
+  actual: "🤾🏽‍♂️"
+}, {
+  expected: "🤾🏾‍♂️",
+  actual: "🤾🏾‍♂️"
+}, {
+  expected: "🤾🏿‍♂️",
+  actual: "🤾🏿‍♂️"
+}, {
+  expected: "🤾🏻‍♀️",
+  actual: "🤾🏻‍♀️"
+}, {
+  expected: "🤾🏼‍♀️",
+  actual: "🤾🏼‍♀️"
+}, {
+  expected: "🤾🏽‍♀️",
+  actual: "🤾🏽‍♀️"
+}, {
+  expected: "🤾🏾‍♀️",
+  actual: "🤾🏾‍♀️"
+}, {
+  expected: "🤾🏿‍♀️",
+  actual: "🤾🏿‍♀️"
+}, {
+  expected: "🤹🏻‍♂️",
+  actual: "🤹🏻‍♂️"
+}, {
+  expected: "🤹🏼‍♂️",
+  actual: "🤹🏼‍♂️"
+}, {
+  expected: "🤹🏽‍♂️",
+  actual: "🤹🏽‍♂️"
+}, {
+  expected: "🤹🏾‍♂️",
+  actual: "🤹🏾‍♂️"
+}, {
+  expected: "🤹🏿‍♂️",
+  actual: "🤹🏿‍♂️"
+}, {
+  expected: "🤹🏻‍♀️",
+  actual: "🤹🏻‍♀️"
+}, {
+  expected: "🤹🏼‍♀️",
+  actual: "🤹🏼‍♀️"
+}, {
+  expected: "🤹🏽‍♀️",
+  actual: "🤹🏽‍♀️"
+}, {
+  expected: "🤹🏾‍♀️",
+  actual: "🤹🏾‍♀️"
+}, {
+  expected: "🤹🏿‍♀️",
+  actual: "🤹🏿‍♀️"
+}, {
+  expected: "🧘🏻‍♂️",
+  actual: "🧘🏻‍♂️"
+}, {
+  expected: "🧘🏼‍♂️",
+  actual: "🧘🏼‍♂️"
+}, {
+  expected: "🧘🏽‍♂️",
+  actual: "🧘🏽‍♂️"
+}, {
+  expected: "🧘🏾‍♂️",
+  actual: "🧘🏾‍♂️"
+}, {
+  expected: "🧘🏿‍♂️",
+  actual: "🧘🏿‍♂️"
+}, {
+  expected: "🧘🏻‍♀️",
+  actual: "🧘🏻‍♀️"
+}, {
+  expected: "🧘🏼‍♀️",
+  actual: "🧘🏼‍♀️"
+}, {
+  expected: "🧘🏽‍♀️",
+  actual: "🧘🏽‍♀️"
+}, {
+  expected: "🧘🏾‍♀️",
+  actual: "🧘🏾‍♀️"
+}, {
+  expected: "🧘🏿‍♀️",
+  actual: "🧘🏿‍♀️"
+}, {
+  expected: "👩‍❤‍👨",
+  actual: "👩‍❤‍👨"
+}, {
+  expected: "👨‍❤‍👨",
+  actual: "👨‍❤‍👨"
+}, {
+  expected: "👩‍❤‍👩",
+  actual: "👩‍❤‍👩"
+}, {
+  expected: "🫱🏻‍🫲🏼",
+  actual: "🫱🏻🫲🏼"
+}, {
+  expected: "🫱🏻‍🫲🏽",
+  actual: "🫱🏻🫲🏽"
+}, {
+  expected: "🫱🏻‍🫲🏾",
+  actual: "🫱🏻🫲🏾"
+}, {
+  expected: "🫱🏻‍🫲🏿",
+  actual: "🫱🏻🫲🏿"
+}, {
+  expected: "🫱🏼‍🫲🏻",
+  actual: "🫱🏼🫲🏻"
+}, {
+  expected: "🫱🏼‍🫲🏽",
+  actual: "🫱🏼🫲🏽"
+}, {
+  expected: "🫱🏼‍🫲🏾",
+  actual: "🫱🏼🫲🏾"
+}, {
+  expected: "🫱🏼‍🫲🏿",
+  actual: "🫱🏼🫲🏿"
+}, {
+  expected: "🫱🏽‍🫲🏻",
+  actual: "🫱🏽🫲🏻"
+}, {
+  expected: "🫱🏽‍🫲🏼",
+  actual: "🫱🏽🫲🏼"
+}, {
+  expected: "🫱🏽‍🫲🏾",
+  actual: "🫱🏽🫲🏾"
+}, {
+  expected: "🫱🏽‍🫲🏿",
+  actual: "🫱🏽🫲🏿"
+}, {
+  expected: "🫱🏾‍🫲🏻",
+  actual: "🫱🏾🫲🏻"
+}, {
+  expected: "🫱🏾‍🫲🏼",
+  actual: "🫱🏾🫲🏼"
+}, {
+  expected: "🫱🏾‍🫲🏽",
+  actual: "🫱🏾🫲🏽"
+}, {
+  expected: "🫱🏾‍🫲🏿",
+  actual: "🫱🏾🫲🏿"
+}, {
+  expected: "🫱🏿‍🫲🏻",
+  actual: "🫱🏿🫲🏻"
+}, {
+  expected: "🫱🏿‍🫲🏼",
+  actual: "🫱🏿🫲🏼"
+}, {
+  expected: "🫱🏿‍🫲🏽",
+  actual: "🫱🏿🫲🏽"
+}, {
+  expected: "🫱🏿‍🫲🏾",
+  actual: "🫱🏿🫲🏾"
+}, {
+  expected: "🕵️‍♂️",
+  actual: "🕵️‍♂️"
+}, {
+  expected: "🕵️‍♀️",
+  actual: "🕵️‍♀️"
+}, {
+  expected: "🏌️‍♂️",
+  actual: "🏌️‍♂️"
+}, {
+  expected: "🏌️‍♀️",
+  actual: "🏌️‍♀️"
+}, {
+  expected: "⛹🏻‍♂️",
+  actual: "⛹🏻‍♂️"
+}, {
+  expected: "⛹🏼‍♂️",
+  actual: "⛹🏼‍♂️"
+}, {
+  expected: "⛹🏽‍♂️",
+  actual: "⛹🏽‍♂️"
+}, {
+  expected: "⛹🏾‍♂️",
+  actual: "⛹🏾‍♂️"
+}, {
+  expected: "⛹🏿‍♂️",
+  actual: "⛹🏿‍♂️"
+}, {
+  expected: "⛹🏻‍♀️",
+  actual: "⛹🏻‍♀️"
+}, {
+  expected: "⛹🏼‍♀️",
+  actual: "⛹🏼‍♀️"
+}, {
+  expected: "⛹🏽‍♀️",
+  actual: "⛹🏽‍♀️"
+}, {
+  expected: "⛹🏾‍♀️",
+  actual: "⛹🏾‍♀️"
+}, {
+  expected: "⛹🏿‍♀️",
+  actual: "⛹🏿‍♀️"
+}, {
+  expected: "🏋️‍♂️",
+  actual: "🏋️‍♂️"
+}, {
+  expected: "🏋️‍♀️",
+  actual: "🏋️‍♀️"
+}, {
+  expected: "👨‍👩‍👧‍👦",
+  actual: "👨👩👧👦"
+}, {
+  expected: "👨‍👩‍👦‍👦",
+  actual: "👨👩👦👦"
+}, {
+  expected: "👨‍👩‍👧‍👧",
+  actual: "👨👩👧👧"
+}, {
+  expected: "👨‍👨‍👧‍👦",
+  actual: "👨👨👧👦"
+}, {
+  expected: "👨‍👨‍👦‍👦",
+  actual: "👨👨👦👦"
+}, {
+  expected: "👨‍👨‍👧‍👧",
+  actual: "👨👨👧👧"
+}, {
+  expected: "👩‍👩‍👧‍👦",
+  actual: "👩👩👧👦"
+}, {
+  expected: "👩‍👩‍👦‍👦",
+  actual: "👩👩👦👦"
+}, {
+  expected: "👩‍👩‍👧‍👧",
+  actual: "👩👩👧👧"
+}, {
+  expected: "🏳️‍⚧️",
+  actual: "🏳️‍⚧️"
+}, {
+  expected: "🧑‍🧑‍🧒‍🧒",
+  actual: "🧑🧑🧒🧒"
+}, {
+  expected: "👨🏻‍🦰",
+  actual: "👨🏻‍🦰"
+}, {
+  expected: "👨🏼‍🦰",
+  actual: "👨🏼‍🦰"
+}, {
+  expected: "👨🏽‍🦰",
+  actual: "👨🏽‍🦰"
+}, {
+  expected: "👨🏾‍🦰",
+  actual: "👨🏾‍🦰"
+}, {
+  expected: "👨🏿‍🦰",
+  actual: "👨🏿‍🦰"
+}, {
+  expected: "👨🏻‍🦱",
+  actual: "👨🏻‍🦱"
+}, {
+  expected: "👨🏼‍🦱",
+  actual: "👨🏼‍🦱"
+}, {
+  expected: "👨🏽‍🦱",
+  actual: "👨🏽‍🦱"
+}, {
+  expected: "👨🏾‍🦱",
+  actual: "👨🏾‍🦱"
+}, {
+  expected: "👨🏿‍🦱",
+  actual: "👨🏿‍🦱"
+}, {
+  expected: "👨🏻‍🦳",
+  actual: "👨🏻‍🦳"
+}, {
+  expected: "👨🏼‍🦳",
+  actual: "👨🏼‍🦳"
+}, {
+  expected: "👨🏽‍🦳",
+  actual: "👨🏽‍🦳"
+}, {
+  expected: "👨🏾‍🦳",
+  actual: "👨🏾‍🦳"
+}, {
+  expected: "👨🏿‍🦳",
+  actual: "👨🏿‍🦳"
+}, {
+  expected: "👨🏻‍🦲",
+  actual: "👨🏻‍🦲"
+}, {
+  expected: "👨🏼‍🦲",
+  actual: "👨🏼‍🦲"
+}, {
+  expected: "👨🏽‍🦲",
+  actual: "👨🏽‍🦲"
+}, {
+  expected: "👨🏾‍🦲",
+  actual: "👨🏾‍🦲"
+}, {
+  expected: "👨🏿‍🦲",
+  actual: "👨🏿‍🦲"
+}, {
+  expected: "👩🏻‍🦰",
+  actual: "👩🏻‍🦰"
+}, {
+  expected: "👩🏼‍🦰",
+  actual: "👩🏼‍🦰"
+}, {
+  expected: "👩🏽‍🦰",
+  actual: "👩🏽‍🦰"
+}, {
+  expected: "👩🏾‍🦰",
+  actual: "👩🏾‍🦰"
+}, {
+  expected: "👩🏿‍🦰",
+  actual: "👩🏿‍🦰"
+}, {
+  expected: "🧑🏻‍🦰",
+  actual: "🧑🏻‍🦰"
+}, {
+  expected: "🧑🏼‍🦰",
+  actual: "🧑🏼‍🦰"
+}, {
+  expected: "🧑🏽‍🦰",
+  actual: "🧑🏽‍🦰"
+}, {
+  expected: "🧑🏾‍🦰",
+  actual: "🧑🏾‍🦰"
+}, {
+  expected: "🧑🏿‍🦰",
+  actual: "🧑🏿‍🦰"
+}, {
+  expected: "👩🏻‍🦱",
+  actual: "👩🏻‍🦱"
+}, {
+  expected: "👩🏼‍🦱",
+  actual: "👩🏼‍🦱"
+}, {
+  expected: "👩🏽‍🦱",
+  actual: "👩🏽‍🦱"
+}, {
+  expected: "👩🏾‍🦱",
+  actual: "👩🏾‍🦱"
+}, {
+  expected: "👩🏿‍🦱",
+  actual: "👩🏿‍🦱"
+}, {
+  expected: "🧑🏻‍🦱",
+  actual: "🧑🏻‍🦱"
+}, {
+  expected: "🧑🏼‍🦱",
+  actual: "🧑🏼‍🦱"
+}, {
+  expected: "🧑🏽‍🦱",
+  actual: "🧑🏽‍🦱"
+}, {
+  expected: "🧑🏾‍🦱",
+  actual: "🧑🏾‍🦱"
+}, {
+  expected: "🧑🏿‍🦱",
+  actual: "🧑🏿‍🦱"
+}, {
+  expected: "👩🏻‍🦳",
+  actual: "👩🏻‍🦳"
+}, {
+  expected: "👩🏼‍🦳",
+  actual: "👩🏼‍🦳"
+}, {
+  expected: "👩🏽‍🦳",
+  actual: "👩🏽‍🦳"
+}, {
+  expected: "👩🏾‍🦳",
+  actual: "👩🏾‍🦳"
+}, {
+  expected: "👩🏿‍🦳",
+  actual: "👩🏿‍🦳"
+}, {
+  expected: "🧑🏻‍🦳",
+  actual: "🧑🏻‍🦳"
+}, {
+  expected: "🧑🏼‍🦳",
+  actual: "🧑🏼‍🦳"
+}, {
+  expected: "🧑🏽‍🦳",
+  actual: "🧑🏽‍🦳"
+}, {
+  expected: "🧑🏾‍🦳",
+  actual: "🧑🏾‍🦳"
+}, {
+  expected: "🧑🏿‍🦳",
+  actual: "🧑🏿‍🦳"
+}, {
+  expected: "👩🏻‍🦲",
+  actual: "👩🏻‍🦲"
+}, {
+  expected: "👩🏼‍🦲",
+  actual: "👩🏼‍🦲"
+}, {
+  expected: "👩🏽‍🦲",
+  actual: "👩🏽‍🦲"
+}, {
+  expected: "👩🏾‍🦲",
+  actual: "👩🏾‍🦲"
+}, {
+  expected: "👩🏿‍🦲",
+  actual: "👩🏿‍🦲"
+}, {
+  expected: "🧑🏻‍🦲",
+  actual: "🧑🏻‍🦲"
+}, {
+  expected: "🧑🏼‍🦲",
+  actual: "🧑🏼‍🦲"
+}, {
+  expected: "🧑🏽‍🦲",
+  actual: "🧑🏽‍🦲"
+}, {
+  expected: "🧑🏾‍🦲",
+  actual: "🧑🏾‍🦲"
+}, {
+  expected: "🧑🏿‍🦲",
+  actual: "🧑🏿‍🦲"
+}, {
+  expected: "🧑🏻‍🎓",
+  actual: "🧑🏻‍🎓"
+}, {
+  expected: "🧑🏼‍🎓",
+  actual: "🧑🏼‍🎓"
+}, {
+  expected: "🧑🏽‍🎓",
+  actual: "🧑🏽‍🎓"
+}, {
+  expected: "🧑🏾‍🎓",
+  actual: "🧑🏾‍🎓"
+}, {
+  expected: "🧑🏿‍🎓",
+  actual: "🧑🏿‍🎓"
+}, {
+  expected: "👨🏻‍🎓",
+  actual: "👨🏻‍🎓"
+}, {
+  expected: "👨🏼‍🎓",
+  actual: "👨🏼‍🎓"
+}, {
+  expected: "👨🏽‍🎓",
+  actual: "👨🏽‍🎓"
+}, {
+  expected: "👨🏾‍🎓",
+  actual: "👨🏾‍🎓"
+}, {
+  expected: "👨🏿‍🎓",
+  actual: "👨🏿‍🎓"
+}, {
+  expected: "👩🏻‍🎓",
+  actual: "👩🏻‍🎓"
+}, {
+  expected: "👩🏼‍🎓",
+  actual: "👩🏼‍🎓"
+}, {
+  expected: "👩🏽‍🎓",
+  actual: "👩🏽‍🎓"
+}, {
+  expected: "👩🏾‍🎓",
+  actual: "👩🏾‍🎓"
+}, {
+  expected: "👩🏿‍🎓",
+  actual: "👩🏿‍🎓"
+}, {
+  expected: "🧑🏻‍🏫",
+  actual: "🧑🏻‍🏫"
+}, {
+  expected: "🧑🏼‍🏫",
+  actual: "🧑🏼‍🏫"
+}, {
+  expected: "🧑🏽‍🏫",
+  actual: "🧑🏽‍🏫"
+}, {
+  expected: "🧑🏾‍🏫",
+  actual: "🧑🏾‍🏫"
+}, {
+  expected: "🧑🏿‍🏫",
+  actual: "🧑🏿‍🏫"
+}, {
+  expected: "👨🏻‍🏫",
+  actual: "👨🏻‍🏫"
+}, {
+  expected: "👨🏼‍🏫",
+  actual: "👨🏼‍🏫"
+}, {
+  expected: "👨🏽‍🏫",
+  actual: "👨🏽‍🏫"
+}, {
+  expected: "👨🏾‍🏫",
+  actual: "👨🏾‍🏫"
+}, {
+  expected: "👨🏿‍🏫",
+  actual: "👨🏿‍🏫"
+}, {
+  expected: "👩🏻‍🏫",
+  actual: "👩🏻‍🏫"
+}, {
+  expected: "👩🏼‍🏫",
+  actual: "👩🏼‍🏫"
+}, {
+  expected: "👩🏽‍🏫",
+  actual: "👩🏽‍🏫"
+}, {
+  expected: "👩🏾‍🏫",
+  actual: "👩🏾‍🏫"
+}, {
+  expected: "👩🏿‍🏫",
+  actual: "👩🏿‍🏫"
+}, {
+  expected: "🧑🏻‍🌾",
+  actual: "🧑🏻‍🌾"
+}, {
+  expected: "🧑🏼‍🌾",
+  actual: "🧑🏼‍🌾"
+}, {
+  expected: "🧑🏽‍🌾",
+  actual: "🧑🏽‍🌾"
+}, {
+  expected: "🧑🏾‍🌾",
+  actual: "🧑🏾‍🌾"
+}, {
+  expected: "🧑🏿‍🌾",
+  actual: "🧑🏿‍🌾"
+}, {
+  expected: "👨🏻‍🌾",
+  actual: "👨🏻‍🌾"
+}, {
+  expected: "👨🏼‍🌾",
+  actual: "👨🏼‍🌾"
+}, {
+  expected: "👨🏽‍🌾",
+  actual: "👨🏽‍🌾"
+}, {
+  expected: "👨🏾‍🌾",
+  actual: "👨🏾‍🌾"
+}, {
+  expected: "👨🏿‍🌾",
+  actual: "👨🏿‍🌾"
+}, {
+  expected: "👩🏻‍🌾",
+  actual: "👩🏻‍🌾"
+}, {
+  expected: "👩🏼‍🌾",
+  actual: "👩🏼‍🌾"
+}, {
+  expected: "👩🏽‍🌾",
+  actual: "👩🏽‍🌾"
+}, {
+  expected: "👩🏾‍🌾",
+  actual: "👩🏾‍🌾"
+}, {
+  expected: "👩🏿‍🌾",
+  actual: "👩🏿‍🌾"
+}, {
+  expected: "🧑🏻‍🍳",
+  actual: "🧑🏻‍🍳"
+}, {
+  expected: "🧑🏼‍🍳",
+  actual: "🧑🏼‍🍳"
+}, {
+  expected: "🧑🏽‍🍳",
+  actual: "🧑🏽‍🍳"
+}, {
+  expected: "🧑🏾‍🍳",
+  actual: "🧑🏾‍🍳"
+}, {
+  expected: "🧑🏿‍🍳",
+  actual: "🧑🏿‍🍳"
+}, {
+  expected: "👨🏻‍🍳",
+  actual: "👨🏻‍🍳"
+}, {
+  expected: "👨🏼‍🍳",
+  actual: "👨🏼‍🍳"
+}, {
+  expected: "👨🏽‍🍳",
+  actual: "👨🏽‍🍳"
+}, {
+  expected: "👨🏾‍🍳",
+  actual: "👨🏾‍🍳"
+}, {
+  expected: "👨🏿‍🍳",
+  actual: "👨🏿‍🍳"
+}, {
+  expected: "👩🏻‍🍳",
+  actual: "👩🏻‍🍳"
+}, {
+  expected: "👩🏼‍🍳",
+  actual: "👩🏼‍🍳"
+}, {
+  expected: "👩🏽‍🍳",
+  actual: "👩🏽‍🍳"
+}, {
+  expected: "👩🏾‍🍳",
+  actual: "👩🏾‍🍳"
+}, {
+  expected: "👩🏿‍🍳",
+  actual: "👩🏿‍🍳"
+}, {
+  expected: "🧑🏻‍🔧",
+  actual: "🧑🏻‍🔧"
+}, {
+  expected: "🧑🏼‍🔧",
+  actual: "🧑🏼‍🔧"
+}, {
+  expected: "🧑🏽‍🔧",
+  actual: "🧑🏽‍🔧"
+}, {
+  expected: "🧑🏾‍🔧",
+  actual: "🧑🏾‍🔧"
+}, {
+  expected: "🧑🏿‍🔧",
+  actual: "🧑🏿‍🔧"
+}, {
+  expected: "👨🏻‍🔧",
+  actual: "👨🏻‍🔧"
+}, {
+  expected: "👨🏼‍🔧",
+  actual: "👨🏼‍🔧"
+}, {
+  expected: "👨🏽‍🔧",
+  actual: "👨🏽‍🔧"
+}, {
+  expected: "👨🏾‍🔧",
+  actual: "👨🏾‍🔧"
+}, {
+  expected: "👨🏿‍🔧",
+  actual: "👨🏿‍🔧"
+}, {
+  expected: "👩🏻‍🔧",
+  actual: "👩🏻‍🔧"
+}, {
+  expected: "👩🏼‍🔧",
+  actual: "👩🏼‍🔧"
+}, {
+  expected: "👩🏽‍🔧",
+  actual: "👩🏽‍🔧"
+}, {
+  expected: "👩🏾‍🔧",
+  actual: "👩🏾‍🔧"
+}, {
+  expected: "👩🏿‍🔧",
+  actual: "👩🏿‍🔧"
+}, {
+  expected: "🧑🏻‍🏭",
+  actual: "🧑🏻‍🏭"
+}, {
+  expected: "🧑🏼‍🏭",
+  actual: "🧑🏼‍🏭"
+}, {
+  expected: "🧑🏽‍🏭",
+  actual: "🧑🏽‍🏭"
+}, {
+  expected: "🧑🏾‍🏭",
+  actual: "🧑🏾‍🏭"
+}, {
+  expected: "🧑🏿‍🏭",
+  actual: "🧑🏿‍🏭"
+}, {
+  expected: "👨🏻‍🏭",
+  actual: "👨🏻‍🏭"
+}, {
+  expected: "👨🏼‍🏭",
+  actual: "👨🏼‍🏭"
+}, {
+  expected: "👨🏽‍🏭",
+  actual: "👨🏽‍🏭"
+}, {
+  expected: "👨🏾‍🏭",
+  actual: "👨🏾‍🏭"
+}, {
+  expected: "👨🏿‍🏭",
+  actual: "👨🏿‍🏭"
+}, {
+  expected: "👩🏻‍🏭",
+  actual: "👩🏻‍🏭"
+}, {
+  expected: "👩🏼‍🏭",
+  actual: "👩🏼‍🏭"
+}, {
+  expected: "👩🏽‍🏭",
+  actual: "👩🏽‍🏭"
+}, {
+  expected: "👩🏾‍🏭",
+  actual: "👩🏾‍🏭"
+}, {
+  expected: "👩🏿‍🏭",
+  actual: "👩🏿‍🏭"
+}, {
+  expected: "🧑🏻‍💼",
+  actual: "🧑🏻‍💼"
+}, {
+  expected: "🧑🏼‍💼",
+  actual: "🧑🏼‍💼"
+}, {
+  expected: "🧑🏽‍💼",
+  actual: "🧑🏽‍💼"
+}, {
+  expected: "🧑🏾‍💼",
+  actual: "🧑🏾‍💼"
+}, {
+  expected: "🧑🏿‍💼",
+  actual: "🧑🏿‍💼"
+}, {
+  expected: "👨🏻‍💼",
+  actual: "👨🏻‍💼"
+}, {
+  expected: "👨🏼‍💼",
+  actual: "👨🏼‍💼"
+}, {
+  expected: "👨🏽‍💼",
+  actual: "👨🏽‍💼"
+}, {
+  expected: "👨🏾‍💼",
+  actual: "👨🏾‍💼"
+}, {
+  expected: "👨🏿‍💼",
+  actual: "👨🏿‍💼"
+}, {
+  expected: "👩🏻‍💼",
+  actual: "👩🏻‍💼"
+}, {
+  expected: "👩🏼‍💼",
+  actual: "👩🏼‍💼"
+}, {
+  expected: "👩🏽‍💼",
+  actual: "👩🏽‍💼"
+}, {
+  expected: "👩🏾‍💼",
+  actual: "👩🏾‍💼"
+}, {
+  expected: "👩🏿‍💼",
+  actual: "👩🏿‍💼"
+}, {
+  expected: "🧑🏻‍🔬",
+  actual: "🧑🏻‍🔬"
+}, {
+  expected: "🧑🏼‍🔬",
+  actual: "🧑🏼‍🔬"
+}, {
+  expected: "🧑🏽‍🔬",
+  actual: "🧑🏽‍🔬"
+}, {
+  expected: "🧑🏾‍🔬",
+  actual: "🧑🏾‍🔬"
+}, {
+  expected: "🧑🏿‍🔬",
+  actual: "🧑🏿‍🔬"
+}, {
+  expected: "👨🏻‍🔬",
+  actual: "👨🏻‍🔬"
+}, {
+  expected: "👨🏼‍🔬",
+  actual: "👨🏼‍🔬"
+}, {
+  expected: "👨🏽‍🔬",
+  actual: "👨🏽‍🔬"
+}, {
+  expected: "👨🏾‍🔬",
+  actual: "👨🏾‍🔬"
+}, {
+  expected: "👨🏿‍🔬",
+  actual: "👨🏿‍🔬"
+}, {
+  expected: "👩🏻‍🔬",
+  actual: "👩🏻‍🔬"
+}, {
+  expected: "👩🏼‍🔬",
+  actual: "👩🏼‍🔬"
+}, {
+  expected: "👩🏽‍🔬",
+  actual: "👩🏽‍🔬"
+}, {
+  expected: "👩🏾‍🔬",
+  actual: "👩🏾‍🔬"
+}, {
+  expected: "👩🏿‍🔬",
+  actual: "👩🏿‍🔬"
+}, {
+  expected: "🧑🏻‍💻",
+  actual: "🧑🏻‍💻"
+}, {
+  expected: "🧑🏼‍💻",
+  actual: "🧑🏼‍💻"
+}, {
+  expected: "🧑🏽‍💻",
+  actual: "🧑🏽‍💻"
+}, {
+  expected: "🧑🏾‍💻",
+  actual: "🧑🏾‍💻"
+}, {
+  expected: "🧑🏿‍💻",
+  actual: "🧑🏿‍💻"
+}, {
+  expected: "👨🏻‍💻",
+  actual: "👨🏻‍💻"
+}, {
+  expected: "👨🏼‍💻",
+  actual: "👨🏼‍💻"
+}, {
+  expected: "👨🏽‍💻",
+  actual: "👨🏽‍💻"
+}, {
+  expected: "👨🏾‍💻",
+  actual: "👨🏾‍💻"
+}, {
+  expected: "👨🏿‍💻",
+  actual: "👨🏿‍💻"
+}, {
+  expected: "👩🏻‍💻",
+  actual: "👩🏻‍💻"
+}, {
+  expected: "👩🏼‍💻",
+  actual: "👩🏼‍💻"
+}, {
+  expected: "👩🏽‍💻",
+  actual: "👩🏽‍💻"
+}, {
+  expected: "👩🏾‍💻",
+  actual: "👩🏾‍💻"
+}, {
+  expected: "👩🏿‍💻",
+  actual: "👩🏿‍💻"
+}, {
+  expected: "🧑🏻‍🎤",
+  actual: "🧑🏻‍🎤"
+}, {
+  expected: "🧑🏼‍🎤",
+  actual: "🧑🏼‍🎤"
+}, {
+  expected: "🧑🏽‍🎤",
+  actual: "🧑🏽‍🎤"
+}, {
+  expected: "🧑🏾‍🎤",
+  actual: "🧑🏾‍🎤"
+}, {
+  expected: "🧑🏿‍🎤",
+  actual: "🧑🏿‍🎤"
+}, {
+  expected: "👨🏻‍🎤",
+  actual: "👨🏻‍🎤"
+}, {
+  expected: "👨🏼‍🎤",
+  actual: "👨🏼‍🎤"
+}, {
+  expected: "👨🏽‍🎤",
+  actual: "👨🏽‍🎤"
+}, {
+  expected: "👨🏾‍🎤",
+  actual: "👨🏾‍🎤"
+}, {
+  expected: "👨🏿‍🎤",
+  actual: "👨🏿‍🎤"
+}, {
+  expected: "👩🏻‍🎤",
+  actual: "👩🏻‍🎤"
+}, {
+  expected: "👩🏼‍🎤",
+  actual: "👩🏼‍🎤"
+}, {
+  expected: "👩🏽‍🎤",
+  actual: "👩🏽‍🎤"
+}, {
+  expected: "👩🏾‍🎤",
+  actual: "👩🏾‍🎤"
+}, {
+  expected: "👩🏿‍🎤",
+  actual: "👩🏿‍🎤"
+}, {
+  expected: "🧑🏻‍🎨",
+  actual: "🧑🏻‍🎨"
+}, {
+  expected: "🧑🏼‍🎨",
+  actual: "🧑🏼‍🎨"
+}, {
+  expected: "🧑🏽‍🎨",
+  actual: "🧑🏽‍🎨"
+}, {
+  expected: "🧑🏾‍🎨",
+  actual: "🧑🏾‍🎨"
+}, {
+  expected: "🧑🏿‍🎨",
+  actual: "🧑🏿‍🎨"
+}, {
+  expected: "👨🏻‍🎨",
+  actual: "👨🏻‍🎨"
+}, {
+  expected: "👨🏼‍🎨",
+  actual: "👨🏼‍🎨"
+}, {
+  expected: "👨🏽‍🎨",
+  actual: "👨🏽‍🎨"
+}, {
+  expected: "👨🏾‍🎨",
+  actual: "👨🏾‍🎨"
+}, {
+  expected: "👨🏿‍🎨",
+  actual: "👨🏿‍🎨"
+}, {
+  expected: "👩🏻‍🎨",
+  actual: "👩🏻‍🎨"
+}, {
+  expected: "👩🏼‍🎨",
+  actual: "👩🏼‍🎨"
+}, {
+  expected: "👩🏽‍🎨",
+  actual: "👩🏽‍🎨"
+}, {
+  expected: "👩🏾‍🎨",
+  actual: "👩🏾‍🎨"
+}, {
+  expected: "👩🏿‍🎨",
+  actual: "👩🏿‍🎨"
+}, {
+  expected: "🧑🏻‍🚀",
+  actual: "🧑🏻‍🚀"
+}, {
+  expected: "🧑🏼‍🚀",
+  actual: "🧑🏼‍🚀"
+}, {
+  expected: "🧑🏽‍🚀",
+  actual: "🧑🏽‍🚀"
+}, {
+  expected: "🧑🏾‍🚀",
+  actual: "🧑🏾‍🚀"
+}, {
+  expected: "🧑🏿‍🚀",
+  actual: "🧑🏿‍🚀"
+}, {
+  expected: "👨🏻‍🚀",
+  actual: "👨🏻‍🚀"
+}, {
+  expected: "👨🏼‍🚀",
+  actual: "👨🏼‍🚀"
+}, {
+  expected: "👨🏽‍🚀",
+  actual: "👨🏽‍🚀"
+}, {
+  expected: "👨🏾‍🚀",
+  actual: "👨🏾‍🚀"
+}, {
+  expected: "👨🏿‍🚀",
+  actual: "👨🏿‍🚀"
+}, {
+  expected: "👩🏻‍🚀",
+  actual: "👩🏻‍🚀"
+}, {
+  expected: "👩🏼‍🚀",
+  actual: "👩🏼‍🚀"
+}, {
+  expected: "👩🏽‍🚀",
+  actual: "👩🏽‍🚀"
+}, {
+  expected: "👩🏾‍🚀",
+  actual: "👩🏾‍🚀"
+}, {
+  expected: "👩🏿‍🚀",
+  actual: "👩🏿‍🚀"
+}, {
+  expected: "🧑🏻‍🚒",
+  actual: "🧑🏻‍🚒"
+}, {
+  expected: "🧑🏼‍🚒",
+  actual: "🧑🏼‍🚒"
+}, {
+  expected: "🧑🏽‍🚒",
+  actual: "🧑🏽‍🚒"
+}, {
+  expected: "🧑🏾‍🚒",
+  actual: "🧑🏾‍🚒"
+}, {
+  expected: "🧑🏿‍🚒",
+  actual: "🧑🏿‍🚒"
+}, {
+  expected: "👨🏻‍🚒",
+  actual: "👨🏻‍🚒"
+}, {
+  expected: "👨🏼‍🚒",
+  actual: "👨🏼‍🚒"
+}, {
+  expected: "👨🏽‍🚒",
+  actual: "👨🏽‍🚒"
+}, {
+  expected: "👨🏾‍🚒",
+  actual: "👨🏾‍🚒"
+}, {
+  expected: "👨🏿‍🚒",
+  actual: "👨🏿‍🚒"
+}, {
+  expected: "👩🏻‍🚒",
+  actual: "👩🏻‍🚒"
+}, {
+  expected: "👩🏼‍🚒",
+  actual: "👩🏼‍🚒"
+}, {
+  expected: "👩🏽‍🚒",
+  actual: "👩🏽‍🚒"
+}, {
+  expected: "👩🏾‍🚒",
+  actual: "👩🏾‍🚒"
+}, {
+  expected: "👩🏿‍🚒",
+  actual: "👩🏿‍🚒"
+}, {
+  expected: "👩🏻‍🍼",
+  actual: "👩🏻‍🍼"
+}, {
+  expected: "👩🏼‍🍼",
+  actual: "👩🏼‍🍼"
+}, {
+  expected: "👩🏽‍🍼",
+  actual: "👩🏽‍🍼"
+}, {
+  expected: "👩🏾‍🍼",
+  actual: "👩🏾‍🍼"
+}, {
+  expected: "👩🏿‍🍼",
+  actual: "👩🏿‍🍼"
+}, {
+  expected: "👨🏻‍🍼",
+  actual: "👨🏻‍🍼"
+}, {
+  expected: "👨🏼‍🍼",
+  actual: "👨🏼‍🍼"
+}, {
+  expected: "👨🏽‍🍼",
+  actual: "👨🏽‍🍼"
+}, {
+  expected: "👨🏾‍🍼",
+  actual: "👨🏾‍🍼"
+}, {
+  expected: "👨🏿‍🍼",
+  actual: "👨🏿‍🍼"
+}, {
+  expected: "🧑🏻‍🍼",
+  actual: "🧑🏻‍🍼"
+}, {
+  expected: "🧑🏼‍🍼",
+  actual: "🧑🏼‍🍼"
+}, {
+  expected: "🧑🏽‍🍼",
+  actual: "🧑🏽‍🍼"
+}, {
+  expected: "🧑🏾‍🍼",
+  actual: "🧑🏾‍🍼"
+}, {
+  expected: "🧑🏿‍🍼",
+  actual: "🧑🏿‍🍼"
+}, {
+  expected: "🧑🏻‍🎄",
+  actual: "🧑🏻‍🎄"
+}, {
+  expected: "🧑🏼‍🎄",
+  actual: "🧑🏼‍🎄"
+}, {
+  expected: "🧑🏽‍🎄",
+  actual: "🧑🏽‍🎄"
+}, {
+  expected: "🧑🏾‍🎄",
+  actual: "🧑🏾‍🎄"
+}, {
+  expected: "🧑🏿‍🎄",
+  actual: "🧑🏿‍🎄"
+}, {
+  expected: "🧑🏻‍🦯",
+  actual: "🧑🏻‍🦯"
+}, {
+  expected: "🧑🏼‍🦯",
+  actual: "🧑🏼‍🦯"
+}, {
+  expected: "🧑🏽‍🦯",
+  actual: "🧑🏽‍🦯"
+}, {
+  expected: "🧑🏾‍🦯",
+  actual: "🧑🏾‍🦯"
+}, {
+  expected: "🧑🏿‍🦯",
+  actual: "🧑🏿‍🦯"
+}, {
+  expected: "👨🏻‍🦯",
+  actual: "👨🏻‍🦯"
+}, {
+  expected: "👨🏼‍🦯",
+  actual: "👨🏼‍🦯"
+}, {
+  expected: "👨🏽‍🦯",
+  actual: "👨🏽‍🦯"
+}, {
+  expected: "👨🏾‍🦯",
+  actual: "👨🏾‍🦯"
+}, {
+  expected: "👨🏿‍🦯",
+  actual: "👨🏿‍🦯"
+}, {
+  expected: "👩🏻‍🦯",
+  actual: "👩🏻‍🦯"
+}, {
+  expected: "👩🏼‍🦯",
+  actual: "👩🏼‍🦯"
+}, {
+  expected: "👩🏽‍🦯",
+  actual: "👩🏽‍🦯"
+}, {
+  expected: "👩🏾‍🦯",
+  actual: "👩🏾‍🦯"
+}, {
+  expected: "👩🏿‍🦯",
+  actual: "👩🏿‍🦯"
+}, {
+  expected: "🧑🏻‍🦼",
+  actual: "🧑🏻‍🦼"
+}, {
+  expected: "🧑🏼‍🦼",
+  actual: "🧑🏼‍🦼"
+}, {
+  expected: "🧑🏽‍🦼",
+  actual: "🧑🏽‍🦼"
+}, {
+  expected: "🧑🏾‍🦼",
+  actual: "🧑🏾‍🦼"
+}, {
+  expected: "🧑🏿‍🦼",
+  actual: "🧑🏿‍🦼"
+}, {
+  expected: "👨🏻‍🦼",
+  actual: "👨🏻‍🦼"
+}, {
+  expected: "👨🏼‍🦼",
+  actual: "👨🏼‍🦼"
+}, {
+  expected: "👨🏽‍🦼",
+  actual: "👨🏽‍🦼"
+}, {
+  expected: "👨🏾‍🦼",
+  actual: "👨🏾‍🦼"
+}, {
+  expected: "👨🏿‍🦼",
+  actual: "👨🏿‍🦼"
+}, {
+  expected: "👩🏻‍🦼",
+  actual: "👩🏻‍🦼"
+}, {
+  expected: "👩🏼‍🦼",
+  actual: "👩🏼‍🦼"
+}, {
+  expected: "👩🏽‍🦼",
+  actual: "👩🏽‍🦼"
+}, {
+  expected: "👩🏾‍🦼",
+  actual: "👩🏾‍🦼"
+}, {
+  expected: "👩🏿‍🦼",
+  actual: "👩🏿‍🦼"
+}, {
+  expected: "🧑🏻‍🦽",
+  actual: "🧑🏻‍🦽"
+}, {
+  expected: "🧑🏼‍🦽",
+  actual: "🧑🏼‍🦽"
+}, {
+  expected: "🧑🏽‍🦽",
+  actual: "🧑🏽‍🦽"
+}, {
+  expected: "🧑🏾‍🦽",
+  actual: "🧑🏾‍🦽"
+}, {
+  expected: "🧑🏿‍🦽",
+  actual: "🧑🏿‍🦽"
+}, {
+  expected: "👨🏻‍🦽",
+  actual: "👨🏻‍🦽"
+}, {
+  expected: "👨🏼‍🦽",
+  actual: "👨🏼‍🦽"
+}, {
+  expected: "👨🏽‍🦽",
+  actual: "👨🏽‍🦽"
+}, {
+  expected: "👨🏾‍🦽",
+  actual: "👨🏾‍🦽"
+}, {
+  expected: "👨🏿‍🦽",
+  actual: "👨🏿‍🦽"
+}, {
+  expected: "👩🏻‍🦽",
+  actual: "👩🏻‍🦽"
+}, {
+  expected: "👩🏼‍🦽",
+  actual: "👩🏼‍🦽"
+}, {
+  expected: "👩🏽‍🦽",
+  actual: "👩🏽‍🦽"
+}, {
+  expected: "👩🏾‍🦽",
+  actual: "👩🏾‍🦽"
+}, {
+  expected: "👩🏿‍🦽",
+  actual: "👩🏿‍🦽"
+}, {
+  expected: "⛹️‍♂️",
+  actual: "⛹️‍♂️"
+}, {
+  expected: "⛹️‍♀️",
+  actual: "⛹️‍♀️"
+}, {
+  expected: "👩‍❤️‍💋‍👨",
+  actual: "👩❤💋👨"
+}, {
+  expected: "👨‍❤️‍💋‍👨",
+  actual: "👨❤💋👨"
+}, {
+  expected: "👩‍❤️‍💋‍👩",
+  actual: "👩❤💋👩"
+}, {
+  expected: "😶‍🌫️",
+  actual: "😶‍🌫️"
+}, {
+  expected: "👁‍🗨️",
+  actual: "👁‍🗨️"
+}, {
+  expected: "👁️‍🗨",
+  actual: "👁️‍🗨"
+}, {
+  expected: "🧔🏻‍♂",
+  actual: "🧔🏻‍♂"
+}, {
+  expected: "🧔🏼‍♂",
+  actual: "🧔🏼‍♂"
+}, {
+  expected: "🧔🏽‍♂",
+  actual: "🧔🏽‍♂"
+}, {
+  expected: "🧔🏾‍♂",
+  actual: "🧔🏾‍♂"
+}, {
+  expected: "🧔🏿‍♂",
+  actual: "🧔🏿‍♂"
+}, {
+  expected: "🧔🏻‍♀",
+  actual: "🧔🏻‍♀"
+}, {
+  expected: "🧔🏼‍♀",
+  actual: "🧔🏼‍♀"
+}, {
+  expected: "🧔🏽‍♀",
+  actual: "🧔🏽‍♀"
+}, {
+  expected: "🧔🏾‍♀",
+  actual: "🧔🏾‍♀"
+}, {
+  expected: "🧔🏿‍♀",
+  actual: "🧔🏿‍♀"
+}, {
+  expected: "👱🏻‍♀",
+  actual: "👱🏻‍♀"
+}, {
+  expected: "👱🏼‍♀",
+  actual: "👱🏼‍♀"
+}, {
+  expected: "👱🏽‍♀",
+  actual: "👱🏽‍♀"
+}, {
+  expected: "👱🏾‍♀",
+  actual: "👱🏾‍♀"
+}, {
+  expected: "👱🏿‍♀",
+  actual: "👱🏿‍♀"
+}, {
+  expected: "👱🏻‍♂",
+  actual: "👱🏻‍♂"
+}, {
+  expected: "👱🏼‍♂",
+  actual: "👱🏼‍♂"
+}, {
+  expected: "👱🏽‍♂",
+  actual: "👱🏽‍♂"
+}, {
+  expected: "👱🏾‍♂",
+  actual: "👱🏾‍♂"
+}, {
+  expected: "👱🏿‍♂",
+  actual: "👱🏿‍♂"
+}, {
+  expected: "🙍🏻‍♂",
+  actual: "🙍🏻‍♂"
+}, {
+  expected: "🙍🏼‍♂",
+  actual: "🙍🏼‍♂"
+}, {
+  expected: "🙍🏽‍♂",
+  actual: "🙍🏽‍♂"
+}, {
+  expected: "🙍🏾‍♂",
+  actual: "🙍🏾‍♂"
+}, {
+  expected: "🙍🏿‍♂",
+  actual: "🙍🏿‍♂"
+}, {
+  expected: "🙍🏻‍♀",
+  actual: "🙍🏻‍♀"
+}, {
+  expected: "🙍🏼‍♀",
+  actual: "🙍🏼‍♀"
+}, {
+  expected: "🙍🏽‍♀",
+  actual: "🙍🏽‍♀"
+}, {
+  expected: "🙍🏾‍♀",
+  actual: "🙍🏾‍♀"
+}, {
+  expected: "🙍🏿‍♀",
+  actual: "🙍🏿‍♀"
+}, {
+  expected: "🙎🏻‍♂",
+  actual: "🙎🏻‍♂"
+}, {
+  expected: "🙎🏼‍♂",
+  actual: "🙎🏼‍♂"
+}, {
+  expected: "🙎🏽‍♂",
+  actual: "🙎🏽‍♂"
+}, {
+  expected: "🙎🏾‍♂",
+  actual: "🙎🏾‍♂"
+}, {
+  expected: "🙎🏿‍♂",
+  actual: "🙎🏿‍♂"
+}, {
+  expected: "🙎🏻‍♀",
+  actual: "🙎🏻‍♀"
+}, {
+  expected: "🙎🏼‍♀",
+  actual: "🙎🏼‍♀"
+}, {
+  expected: "🙎🏽‍♀",
+  actual: "🙎🏽‍♀"
+}, {
+  expected: "🙎🏾‍♀",
+  actual: "🙎🏾‍♀"
+}, {
+  expected: "🙎🏿‍♀",
+  actual: "🙎🏿‍♀"
+}, {
+  expected: "🙅🏻‍♂",
+  actual: "🙅🏻‍♂"
+}, {
+  expected: "🙅🏼‍♂",
+  actual: "🙅🏼‍♂"
+}, {
+  expected: "🙅🏽‍♂",
+  actual: "🙅🏽‍♂"
+}, {
+  expected: "🙅🏾‍♂",
+  actual: "🙅🏾‍♂"
+}, {
+  expected: "🙅🏿‍♂",
+  actual: "🙅🏿‍♂"
+}, {
+  expected: "🙅🏻‍♀",
+  actual: "🙅🏻‍♀"
+}, {
+  expected: "🙅🏼‍♀",
+  actual: "🙅🏼‍♀"
+}, {
+  expected: "🙅🏽‍♀",
+  actual: "🙅🏽‍♀"
+}, {
+  expected: "🙅🏾‍♀",
+  actual: "🙅🏾‍♀"
+}, {
+  expected: "🙅🏿‍♀",
+  actual: "🙅🏿‍♀"
+}, {
+  expected: "🙆🏻‍♂",
+  actual: "🙆🏻‍♂"
+}, {
+  expected: "🙆🏼‍♂",
+  actual: "🙆🏼‍♂"
+}, {
+  expected: "🙆🏽‍♂",
+  actual: "🙆🏽‍♂"
+}, {
+  expected: "🙆🏾‍♂",
+  actual: "🙆🏾‍♂"
+}, {
+  expected: "🙆🏿‍♂",
+  actual: "🙆🏿‍♂"
+}, {
+  expected: "🙆🏻‍♀",
+  actual: "🙆🏻‍♀"
+}, {
+  expected: "🙆🏼‍♀",
+  actual: "🙆🏼‍♀"
+}, {
+  expected: "🙆🏽‍♀",
+  actual: "🙆🏽‍♀"
+}, {
+  expected: "🙆🏾‍♀",
+  actual: "🙆🏾‍♀"
+}, {
+  expected: "🙆🏿‍♀",
+  actual: "🙆🏿‍♀"
+}, {
+  expected: "💁🏻‍♂",
+  actual: "💁🏻‍♂"
+}, {
+  expected: "💁🏼‍♂",
+  actual: "💁🏼‍♂"
+}, {
+  expected: "💁🏽‍♂",
+  actual: "💁🏽‍♂"
+}, {
+  expected: "💁🏾‍♂",
+  actual: "💁🏾‍♂"
+}, {
+  expected: "💁🏿‍♂",
+  actual: "💁🏿‍♂"
+}, {
+  expected: "💁🏻‍♀",
+  actual: "💁🏻‍♀"
+}, {
+  expected: "💁🏼‍♀",
+  actual: "💁🏼‍♀"
+}, {
+  expected: "💁🏽‍♀",
+  actual: "💁🏽‍♀"
+}, {
+  expected: "💁🏾‍♀",
+  actual: "💁🏾‍♀"
+}, {
+  expected: "💁🏿‍♀",
+  actual: "💁🏿‍♀"
+}, {
+  expected: "🙋🏻‍♂",
+  actual: "🙋🏻‍♂"
+}, {
+  expected: "🙋🏼‍♂",
+  actual: "🙋🏼‍♂"
+}, {
+  expected: "🙋🏽‍♂",
+  actual: "🙋🏽‍♂"
+}, {
+  expected: "🙋🏾‍♂",
+  actual: "🙋🏾‍♂"
+}, {
+  expected: "🙋🏿‍♂",
+  actual: "🙋🏿‍♂"
+}, {
+  expected: "🙋🏻‍♀",
+  actual: "🙋🏻‍♀"
+}, {
+  expected: "🙋🏼‍♀",
+  actual: "🙋🏼‍♀"
+}, {
+  expected: "🙋🏽‍♀",
+  actual: "🙋🏽‍♀"
+}, {
+  expected: "🙋🏾‍♀",
+  actual: "🙋🏾‍♀"
+}, {
+  expected: "🙋🏿‍♀",
+  actual: "🙋🏿‍♀"
+}, {
+  expected: "🧏🏻‍♂",
+  actual: "🧏🏻‍♂"
+}, {
+  expected: "🧏🏼‍♂",
+  actual: "🧏🏼‍♂"
+}, {
+  expected: "🧏🏽‍♂",
+  actual: "🧏🏽‍♂"
+}, {
+  expected: "🧏🏾‍♂",
+  actual: "🧏🏾‍♂"
+}, {
+  expected: "🧏🏿‍♂",
+  actual: "🧏🏿‍♂"
+}, {
+  expected: "🧏🏻‍♀",
+  actual: "🧏🏻‍♀"
+}, {
+  expected: "🧏🏼‍♀",
+  actual: "🧏🏼‍♀"
+}, {
+  expected: "🧏🏽‍♀",
+  actual: "🧏🏽‍♀"
+}, {
+  expected: "🧏🏾‍♀",
+  actual: "🧏🏾‍♀"
+}, {
+  expected: "🧏🏿‍♀",
+  actual: "🧏🏿‍♀"
+}, {
+  expected: "🙇🏻‍♂",
+  actual: "🙇🏻‍♂"
+}, {
+  expected: "🙇🏼‍♂",
+  actual: "🙇🏼‍♂"
+}, {
+  expected: "🙇🏽‍♂",
+  actual: "🙇🏽‍♂"
+}, {
+  expected: "🙇🏾‍♂",
+  actual: "🙇🏾‍♂"
+}, {
+  expected: "🙇🏿‍♂",
+  actual: "🙇🏿‍♂"
+}, {
+  expected: "🙇🏻‍♀",
+  actual: "🙇🏻‍♀"
+}, {
+  expected: "🙇🏼‍♀",
+  actual: "🙇🏼‍♀"
+}, {
+  expected: "🙇🏽‍♀",
+  actual: "🙇🏽‍♀"
+}, {
+  expected: "🙇🏾‍♀",
+  actual: "🙇🏾‍♀"
+}, {
+  expected: "🙇🏿‍♀",
+  actual: "🙇🏿‍♀"
+}, {
+  expected: "🤦🏻‍♂",
+  actual: "🤦🏻‍♂"
+}, {
+  expected: "🤦🏼‍♂",
+  actual: "🤦🏼‍♂"
+}, {
+  expected: "🤦🏽‍♂",
+  actual: "🤦🏽‍♂"
+}, {
+  expected: "🤦🏾‍♂",
+  actual: "🤦🏾‍♂"
+}, {
+  expected: "🤦🏿‍♂",
+  actual: "🤦🏿‍♂"
+}, {
+  expected: "🤦🏻‍♀",
+  actual: "🤦🏻‍♀"
+}, {
+  expected: "🤦🏼‍♀",
+  actual: "🤦🏼‍♀"
+}, {
+  expected: "🤦🏽‍♀",
+  actual: "🤦🏽‍♀"
+}, {
+  expected: "🤦🏾‍♀",
+  actual: "🤦🏾‍♀"
+}, {
+  expected: "🤦🏿‍♀",
+  actual: "🤦🏿‍♀"
+}, {
+  expected: "🤷🏻‍♂",
+  actual: "🤷🏻‍♂"
+}, {
+  expected: "🤷🏼‍♂",
+  actual: "🤷🏼‍♂"
+}, {
+  expected: "🤷🏽‍♂",
+  actual: "🤷🏽‍♂"
+}, {
+  expected: "🤷🏾‍♂",
+  actual: "🤷🏾‍♂"
+}, {
+  expected: "🤷🏿‍♂",
+  actual: "🤷🏿‍♂"
+}, {
+  expected: "🤷🏻‍♀",
+  actual: "🤷🏻‍♀"
+}, {
+  expected: "🤷🏼‍♀",
+  actual: "🤷🏼‍♀"
+}, {
+  expected: "🤷🏽‍♀",
+  actual: "🤷🏽‍♀"
+}, {
+  expected: "🤷🏾‍♀",
+  actual: "🤷🏾‍♀"
+}, {
+  expected: "🤷🏿‍♀",
+  actual: "🤷🏿‍♀"
+}, {
+  expected: "🧑🏻‍⚕",
+  actual: "🧑🏻‍⚕"
+}, {
+  expected: "🧑🏼‍⚕",
+  actual: "🧑🏼‍⚕"
+}, {
+  expected: "🧑🏽‍⚕",
+  actual: "🧑🏽‍⚕"
+}, {
+  expected: "🧑🏾‍⚕",
+  actual: "🧑🏾‍⚕"
+}, {
+  expected: "🧑🏿‍⚕",
+  actual: "🧑🏿‍⚕"
+}, {
+  expected: "👨🏻‍⚕",
+  actual: "👨🏻‍⚕"
+}, {
+  expected: "👨🏼‍⚕",
+  actual: "👨🏼‍⚕"
+}, {
+  expected: "👨🏽‍⚕",
+  actual: "👨🏽‍⚕"
+}, {
+  expected: "👨🏾‍⚕",
+  actual: "👨🏾‍⚕"
+}, {
+  expected: "👨🏿‍⚕",
+  actual: "👨🏿‍⚕"
+}, {
+  expected: "👩🏻‍⚕",
+  actual: "👩🏻‍⚕"
+}, {
+  expected: "👩🏼‍⚕",
+  actual: "👩🏼‍⚕"
+}, {
+  expected: "👩🏽‍⚕",
+  actual: "👩🏽‍⚕"
+}, {
+  expected: "👩🏾‍⚕",
+  actual: "👩🏾‍⚕"
+}, {
+  expected: "👩🏿‍⚕",
+  actual: "👩🏿‍⚕"
+}, {
+  expected: "🧑🏻‍⚖",
+  actual: "🧑🏻‍⚖"
+}, {
+  expected: "🧑🏼‍⚖",
+  actual: "🧑🏼‍⚖"
+}, {
+  expected: "🧑🏽‍⚖",
+  actual: "🧑🏽‍⚖"
+}, {
+  expected: "🧑🏾‍⚖",
+  actual: "🧑🏾‍⚖"
+}, {
+  expected: "🧑🏿‍⚖",
+  actual: "🧑🏿‍⚖"
+}, {
+  expected: "👨🏻‍⚖",
+  actual: "👨🏻‍⚖"
+}, {
+  expected: "👨🏼‍⚖",
+  actual: "👨🏼‍⚖"
+}, {
+  expected: "👨🏽‍⚖",
+  actual: "👨🏽‍⚖"
+}, {
+  expected: "👨🏾‍⚖",
+  actual: "👨🏾‍⚖"
+}, {
+  expected: "👨🏿‍⚖",
+  actual: "👨🏿‍⚖"
+}, {
+  expected: "👩🏻‍⚖",
+  actual: "👩🏻‍⚖"
+}, {
+  expected: "👩🏼‍⚖",
+  actual: "👩🏼‍⚖"
+}, {
+  expected: "👩🏽‍⚖",
+  actual: "👩🏽‍⚖"
+}, {
+  expected: "👩🏾‍⚖",
+  actual: "👩🏾‍⚖"
+}, {
+  expected: "👩🏿‍⚖",
+  actual: "👩🏿‍⚖"
+}, {
+  expected: "🧑🏻‍✈",
+  actual: "🧑🏻‍✈"
+}, {
+  expected: "🧑🏼‍✈",
+  actual: "🧑🏼‍✈"
+}, {
+  expected: "🧑🏽‍✈",
+  actual: "🧑🏽‍✈"
+}, {
+  expected: "🧑🏾‍✈",
+  actual: "🧑🏾‍✈"
+}, {
+  expected: "🧑🏿‍✈",
+  actual: "🧑🏿‍✈"
+}, {
+  expected: "👨🏻‍✈",
+  actual: "👨🏻‍✈"
+}, {
+  expected: "👨🏼‍✈",
+  actual: "👨🏼‍✈"
+}, {
+  expected: "👨🏽‍✈",
+  actual: "👨🏽‍✈"
+}, {
+  expected: "👨🏾‍✈",
+  actual: "👨🏾‍✈"
+}, {
+  expected: "👨🏿‍✈",
+  actual: "👨🏿‍✈"
+}, {
+  expected: "👩🏻‍✈",
+  actual: "👩🏻‍✈"
+}, {
+  expected: "👩🏼‍✈",
+  actual: "👩🏼‍✈"
+}, {
+  expected: "👩🏽‍✈",
+  actual: "👩🏽‍✈"
+}, {
+  expected: "👩🏾‍✈",
+  actual: "👩🏾‍✈"
+}, {
+  expected: "👩🏿‍✈",
+  actual: "👩🏿‍✈"
+}, {
+  expected: "👮🏻‍♂",
+  actual: "👮🏻‍♂"
+}, {
+  expected: "👮🏼‍♂",
+  actual: "👮🏼‍♂"
+}, {
+  expected: "👮🏽‍♂",
+  actual: "👮🏽‍♂"
+}, {
+  expected: "👮🏾‍♂",
+  actual: "👮🏾‍♂"
+}, {
+  expected: "👮🏿‍♂",
+  actual: "👮🏿‍♂"
+}, {
+  expected: "👮🏻‍♀",
+  actual: "👮🏻‍♀"
+}, {
+  expected: "👮🏼‍♀",
+  actual: "👮🏼‍♀"
+}, {
+  expected: "👮🏽‍♀",
+  actual: "👮🏽‍♀"
+}, {
+  expected: "👮🏾‍♀",
+  actual: "👮🏾‍♀"
+}, {
+  expected: "👮🏿‍♀",
+  actual: "👮🏿‍♀"
+}, {
+  expected: "🕵🏻‍♂",
+  actual: "🕵🏻‍♂"
+}, {
+  expected: "🕵🏼‍♂",
+  actual: "🕵🏼‍♂"
+}, {
+  expected: "🕵🏽‍♂",
+  actual: "🕵🏽‍♂"
+}, {
+  expected: "🕵🏾‍♂",
+  actual: "🕵🏾‍♂"
+}, {
+  expected: "🕵🏿‍♂",
+  actual: "🕵🏿‍♂"
+}, {
+  expected: "🕵🏻‍♀",
+  actual: "🕵🏻‍♀"
+}, {
+  expected: "🕵🏼‍♀",
+  actual: "🕵🏼‍♀"
+}, {
+  expected: "🕵🏽‍♀",
+  actual: "🕵🏽‍♀"
+}, {
+  expected: "🕵🏾‍♀",
+  actual: "🕵🏾‍♀"
+}, {
+  expected: "🕵🏿‍♀",
+  actual: "🕵🏿‍♀"
+}, {
+  expected: "💂🏻‍♂",
+  actual: "💂🏻‍♂"
+}, {
+  expected: "💂🏼‍♂",
+  actual: "💂🏼‍♂"
+}, {
+  expected: "💂🏽‍♂",
+  actual: "💂🏽‍♂"
+}, {
+  expected: "💂🏾‍♂",
+  actual: "💂🏾‍♂"
+}, {
+  expected: "💂🏿‍♂",
+  actual: "💂🏿‍♂"
+}, {
+  expected: "💂🏻‍♀",
+  actual: "💂🏻‍♀"
+}, {
+  expected: "💂🏼‍♀",
+  actual: "💂🏼‍♀"
+}, {
+  expected: "💂🏽‍♀",
+  actual: "💂🏽‍♀"
+}, {
+  expected: "💂🏾‍♀",
+  actual: "💂🏾‍♀"
+}, {
+  expected: "💂🏿‍♀",
+  actual: "💂🏿‍♀"
+}, {
+  expected: "👷🏻‍♂",
+  actual: "👷🏻‍♂"
+}, {
+  expected: "👷🏼‍♂",
+  actual: "👷🏼‍♂"
+}, {
+  expected: "👷🏽‍♂",
+  actual: "👷🏽‍♂"
+}, {
+  expected: "👷🏾‍♂",
+  actual: "👷🏾‍♂"
+}, {
+  expected: "👷🏿‍♂",
+  actual: "👷🏿‍♂"
+}, {
+  expected: "👷🏻‍♀",
+  actual: "👷🏻‍♀"
+}, {
+  expected: "👷🏼‍♀",
+  actual: "👷🏼‍♀"
+}, {
+  expected: "👷🏽‍♀",
+  actual: "👷🏽‍♀"
+}, {
+  expected: "👷🏾‍♀",
+  actual: "👷🏾‍♀"
+}, {
+  expected: "👷🏿‍♀",
+  actual: "👷🏿‍♀"
+}, {
+  expected: "👳🏻‍♂",
+  actual: "👳🏻‍♂"
+}, {
+  expected: "👳🏼‍♂",
+  actual: "👳🏼‍♂"
+}, {
+  expected: "👳🏽‍♂",
+  actual: "👳🏽‍♂"
+}, {
+  expected: "👳🏾‍♂",
+  actual: "👳🏾‍♂"
+}, {
+  expected: "👳🏿‍♂",
+  actual: "👳🏿‍♂"
+}, {
+  expected: "👳🏻‍♀",
+  actual: "👳🏻‍♀"
+}, {
+  expected: "👳🏼‍♀",
+  actual: "👳🏼‍♀"
+}, {
+  expected: "👳🏽‍♀",
+  actual: "👳🏽‍♀"
+}, {
+  expected: "👳🏾‍♀",
+  actual: "👳🏾‍♀"
+}, {
+  expected: "👳🏿‍♀",
+  actual: "👳🏿‍♀"
+}, {
+  expected: "🤵🏻‍♂",
+  actual: "🤵🏻‍♂"
+}, {
+  expected: "🤵🏼‍♂",
+  actual: "🤵🏼‍♂"
+}, {
+  expected: "🤵🏽‍♂",
+  actual: "🤵🏽‍♂"
+}, {
+  expected: "🤵🏾‍♂",
+  actual: "🤵🏾‍♂"
+}, {
+  expected: "🤵🏿‍♂",
+  actual: "🤵🏿‍♂"
+}, {
+  expected: "🤵🏻‍♀",
+  actual: "🤵🏻‍♀"
+}, {
+  expected: "🤵🏼‍♀",
+  actual: "🤵🏼‍♀"
+}, {
+  expected: "🤵🏽‍♀",
+  actual: "🤵🏽‍♀"
+}, {
+  expected: "🤵🏾‍♀",
+  actual: "🤵🏾‍♀"
+}, {
+  expected: "🤵🏿‍♀",
+  actual: "🤵🏿‍♀"
+}, {
+  expected: "👰🏻‍♂",
+  actual: "👰🏻‍♂"
+}, {
+  expected: "👰🏼‍♂",
+  actual: "👰🏼‍♂"
+}, {
+  expected: "👰🏽‍♂",
+  actual: "👰🏽‍♂"
+}, {
+  expected: "👰🏾‍♂",
+  actual: "👰🏾‍♂"
+}, {
+  expected: "👰🏿‍♂",
+  actual: "👰🏿‍♂"
+}, {
+  expected: "👰🏻‍♀",
+  actual: "👰🏻‍♀"
+}, {
+  expected: "👰🏼‍♀",
+  actual: "👰🏼‍♀"
+}, {
+  expected: "👰🏽‍♀",
+  actual: "👰🏽‍♀"
+}, {
+  expected: "👰🏾‍♀",
+  actual: "👰🏾‍♀"
+}, {
+  expected: "👰🏿‍♀",
+  actual: "👰🏿‍♀"
+}, {
+  expected: "🦸🏻‍♂",
+  actual: "🦸🏻‍♂"
+}, {
+  expected: "🦸🏼‍♂",
+  actual: "🦸🏼‍♂"
+}, {
+  expected: "🦸🏽‍♂",
+  actual: "🦸🏽‍♂"
+}, {
+  expected: "🦸🏾‍♂",
+  actual: "🦸🏾‍♂"
+}, {
+  expected: "🦸🏿‍♂",
+  actual: "🦸🏿‍♂"
+}, {
+  expected: "🦸🏻‍♀",
+  actual: "🦸🏻‍♀"
+}, {
+  expected: "🦸🏼‍♀",
+  actual: "🦸🏼‍♀"
+}, {
+  expected: "🦸🏽‍♀",
+  actual: "🦸🏽‍♀"
+}, {
+  expected: "🦸🏾‍♀",
+  actual: "🦸🏾‍♀"
+}, {
+  expected: "🦸🏿‍♀",
+  actual: "🦸🏿‍♀"
+}, {
+  expected: "🦹🏻‍♂",
+  actual: "🦹🏻‍♂"
+}, {
+  expected: "🦹🏼‍♂",
+  actual: "🦹🏼‍♂"
+}, {
+  expected: "🦹🏽‍♂",
+  actual: "🦹🏽‍♂"
+}, {
+  expected: "🦹🏾‍♂",
+  actual: "🦹🏾‍♂"
+}, {
+  expected: "🦹🏿‍♂",
+  actual: "🦹🏿‍♂"
+}, {
+  expected: "🦹🏻‍♀",
+  actual: "🦹🏻‍♀"
+}, {
+  expected: "🦹🏼‍♀",
+  actual: "🦹🏼‍♀"
+}, {
+  expected: "🦹🏽‍♀",
+  actual: "🦹🏽‍♀"
+}, {
+  expected: "🦹🏾‍♀",
+  actual: "🦹🏾‍♀"
+}, {
+  expected: "🦹🏿‍♀",
+  actual: "🦹🏿‍♀"
+}, {
+  expected: "🧙🏻‍♂",
+  actual: "🧙🏻‍♂"
+}, {
+  expected: "🧙🏼‍♂",
+  actual: "🧙🏼‍♂"
+}, {
+  expected: "🧙🏽‍♂",
+  actual: "🧙🏽‍♂"
+}, {
+  expected: "🧙🏾‍♂",
+  actual: "🧙🏾‍♂"
+}, {
+  expected: "🧙🏿‍♂",
+  actual: "🧙🏿‍♂"
+}, {
+  expected: "🧙🏻‍♀",
+  actual: "🧙🏻‍♀"
+}, {
+  expected: "🧙🏼‍♀",
+  actual: "🧙🏼‍♀"
+}, {
+  expected: "🧙🏽‍♀",
+  actual: "🧙🏽‍♀"
+}, {
+  expected: "🧙🏾‍♀",
+  actual: "🧙🏾‍♀"
+}, {
+  expected: "🧙🏿‍♀",
+  actual: "🧙🏿‍♀"
+}, {
+  expected: "🧚🏻‍♂",
+  actual: "🧚🏻‍♂"
+}, {
+  expected: "🧚🏼‍♂",
+  actual: "🧚🏼‍♂"
+}, {
+  expected: "🧚🏽‍♂",
+  actual: "🧚🏽‍♂"
+}, {
+  expected: "🧚🏾‍♂",
+  actual: "🧚🏾‍♂"
+}, {
+  expected: "🧚🏿‍♂",
+  actual: "🧚🏿‍♂"
+}, {
+  expected: "🧚🏻‍♀",
+  actual: "🧚🏻‍♀"
+}, {
+  expected: "🧚🏼‍♀",
+  actual: "🧚🏼‍♀"
+}, {
+  expected: "🧚🏽‍♀",
+  actual: "🧚🏽‍♀"
+}, {
+  expected: "🧚🏾‍♀",
+  actual: "🧚🏾‍♀"
+}, {
+  expected: "🧚🏿‍♀",
+  actual: "🧚🏿‍♀"
+}, {
+  expected: "🧛🏻‍♂",
+  actual: "🧛🏻‍♂"
+}, {
+  expected: "🧛🏼‍♂",
+  actual: "🧛🏼‍♂"
+}, {
+  expected: "🧛🏽‍♂",
+  actual: "🧛🏽‍♂"
+}, {
+  expected: "🧛🏾‍♂",
+  actual: "🧛🏾‍♂"
+}, {
+  expected: "🧛🏿‍♂",
+  actual: "🧛🏿‍♂"
+}, {
+  expected: "🧛🏻‍♀",
+  actual: "🧛🏻‍♀"
+}, {
+  expected: "🧛🏼‍♀",
+  actual: "🧛🏼‍♀"
+}, {
+  expected: "🧛🏽‍♀",
+  actual: "🧛🏽‍♀"
+}, {
+  expected: "🧛🏾‍♀",
+  actual: "🧛🏾‍♀"
+}, {
+  expected: "🧛🏿‍♀",
+  actual: "🧛🏿‍♀"
+}, {
+  expected: "🧜🏻‍♂",
+  actual: "🧜🏻‍♂"
+}, {
+  expected: "🧜🏼‍♂",
+  actual: "🧜🏼‍♂"
+}, {
+  expected: "🧜🏽‍♂",
+  actual: "🧜🏽‍♂"
+}, {
+  expected: "🧜🏾‍♂",
+  actual: "🧜🏾‍♂"
+}, {
+  expected: "🧜🏿‍♂",
+  actual: "🧜🏿‍♂"
+}, {
+  expected: "🧜🏻‍♀",
+  actual: "🧜🏻‍♀"
+}, {
+  expected: "🧜🏼‍♀",
+  actual: "🧜🏼‍♀"
+}, {
+  expected: "🧜🏽‍♀",
+  actual: "🧜🏽‍♀"
+}, {
+  expected: "🧜🏾‍♀",
+  actual: "🧜🏾‍♀"
+}, {
+  expected: "🧜🏿‍♀",
+  actual: "🧜🏿‍♀"
+}, {
+  expected: "🧝🏻‍♂",
+  actual: "🧝🏻‍♂"
+}, {
+  expected: "🧝🏼‍♂",
+  actual: "🧝🏼‍♂"
+}, {
+  expected: "🧝🏽‍♂",
+  actual: "🧝🏽‍♂"
+}, {
+  expected: "🧝🏾‍♂",
+  actual: "🧝🏾‍♂"
+}, {
+  expected: "🧝🏿‍♂",
+  actual: "🧝🏿‍♂"
+}, {
+  expected: "🧝🏻‍♀",
+  actual: "🧝🏻‍♀"
+}, {
+  expected: "🧝🏼‍♀",
+  actual: "🧝🏼‍♀"
+}, {
+  expected: "🧝🏽‍♀",
+  actual: "🧝🏽‍♀"
+}, {
+  expected: "🧝🏾‍♀",
+  actual: "🧝🏾‍♀"
+}, {
+  expected: "🧝🏿‍♀",
+  actual: "🧝🏿‍♀"
+}, {
+  expected: "💆🏻‍♂",
+  actual: "💆🏻‍♂"
+}, {
+  expected: "💆🏼‍♂",
+  actual: "💆🏼‍♂"
+}, {
+  expected: "💆🏽‍♂",
+  actual: "💆🏽‍♂"
+}, {
+  expected: "💆🏾‍♂",
+  actual: "💆🏾‍♂"
+}, {
+  expected: "💆🏿‍♂",
+  actual: "💆🏿‍♂"
+}, {
+  expected: "💆🏻‍♀",
+  actual: "💆🏻‍♀"
+}, {
+  expected: "💆🏼‍♀",
+  actual: "💆🏼‍♀"
+}, {
+  expected: "💆🏽‍♀",
+  actual: "💆🏽‍♀"
+}, {
+  expected: "💆🏾‍♀",
+  actual: "💆🏾‍♀"
+}, {
+  expected: "💆🏿‍♀",
+  actual: "💆🏿‍♀"
+}, {
+  expected: "💇🏻‍♂",
+  actual: "💇🏻‍♂"
+}, {
+  expected: "💇🏼‍♂",
+  actual: "💇🏼‍♂"
+}, {
+  expected: "💇🏽‍♂",
+  actual: "💇🏽‍♂"
+}, {
+  expected: "💇🏾‍♂",
+  actual: "💇🏾‍♂"
+}, {
+  expected: "💇🏿‍♂",
+  actual: "💇🏿‍♂"
+}, {
+  expected: "💇🏻‍♀",
+  actual: "💇🏻‍♀"
+}, {
+  expected: "💇🏼‍♀",
+  actual: "💇🏼‍♀"
+}, {
+  expected: "💇🏽‍♀",
+  actual: "💇🏽‍♀"
+}, {
+  expected: "💇🏾‍♀",
+  actual: "💇🏾‍♀"
+}, {
+  expected: "💇🏿‍♀",
+  actual: "💇🏿‍♀"
+}, {
+  expected: "🚶🏻‍♂",
+  actual: "🚶🏻‍♂"
+}, {
+  expected: "🚶🏼‍♂",
+  actual: "🚶🏼‍♂"
+}, {
+  expected: "🚶🏽‍♂",
+  actual: "🚶🏽‍♂"
+}, {
+  expected: "🚶🏾‍♂",
+  actual: "🚶🏾‍♂"
+}, {
+  expected: "🚶🏿‍♂",
+  actual: "🚶🏿‍♂"
+}, {
+  expected: "🚶🏻‍♀",
+  actual: "🚶🏻‍♀"
+}, {
+  expected: "🚶🏼‍♀",
+  actual: "🚶🏼‍♀"
+}, {
+  expected: "🚶🏽‍♀",
+  actual: "🚶🏽‍♀"
+}, {
+  expected: "🚶🏾‍♀",
+  actual: "🚶🏾‍♀"
+}, {
+  expected: "🚶🏿‍♀",
+  actual: "🚶🏿‍♀"
+}, {
+  expected: "🧍🏻‍♂",
+  actual: "🧍🏻‍♂"
+}, {
+  expected: "🧍🏼‍♂",
+  actual: "🧍🏼‍♂"
+}, {
+  expected: "🧍🏽‍♂",
+  actual: "🧍🏽‍♂"
+}, {
+  expected: "🧍🏾‍♂",
+  actual: "🧍🏾‍♂"
+}, {
+  expected: "🧍🏿‍♂",
+  actual: "🧍🏿‍♂"
+}, {
+  expected: "🧍🏻‍♀",
+  actual: "🧍🏻‍♀"
+}, {
+  expected: "🧍🏼‍♀",
+  actual: "🧍🏼‍♀"
+}, {
+  expected: "🧍🏽‍♀",
+  actual: "🧍🏽‍♀"
+}, {
+  expected: "🧍🏾‍♀",
+  actual: "🧍🏾‍♀"
+}, {
+  expected: "🧍🏿‍♀",
+  actual: "🧍🏿‍♀"
+}, {
+  expected: "🧎🏻‍♂",
+  actual: "🧎🏻‍♂"
+}, {
+  expected: "🧎🏼‍♂",
+  actual: "🧎🏼‍♂"
+}, {
+  expected: "🧎🏽‍♂",
+  actual: "🧎🏽‍♂"
+}, {
+  expected: "🧎🏾‍♂",
+  actual: "🧎🏾‍♂"
+}, {
+  expected: "🧎🏿‍♂",
+  actual: "🧎🏿‍♂"
+}, {
+  expected: "🧎🏻‍♀",
+  actual: "🧎🏻‍♀"
+}, {
+  expected: "🧎🏼‍♀",
+  actual: "🧎🏼‍♀"
+}, {
+  expected: "🧎🏽‍♀",
+  actual: "🧎🏽‍♀"
+}, {
+  expected: "🧎🏾‍♀",
+  actual: "🧎🏾‍♀"
+}, {
+  expected: "🧎🏿‍♀",
+  actual: "🧎🏿‍♀"
+}, {
+  expected: "🏃🏻‍♂",
+  actual: "🏃🏻‍♂"
+}, {
+  expected: "🏃🏼‍♂",
+  actual: "🏃🏼‍♂"
+}, {
+  expected: "🏃🏽‍♂",
+  actual: "🏃🏽‍♂"
+}, {
+  expected: "🏃🏾‍♂",
+  actual: "🏃🏾‍♂"
+}, {
+  expected: "🏃🏿‍♂",
+  actual: "🏃🏿‍♂"
+}, {
+  expected: "🏃🏻‍♀",
+  actual: "🏃🏻‍♀"
+}, {
+  expected: "🏃🏼‍♀",
+  actual: "🏃🏼‍♀"
+}, {
+  expected: "🏃🏽‍♀",
+  actual: "🏃🏽‍♀"
+}, {
+  expected: "🏃🏾‍♀",
+  actual: "🏃🏾‍♀"
+}, {
+  expected: "🏃🏿‍♀",
+  actual: "🏃🏿‍♀"
+}, {
+  expected: "🧖🏻‍♂",
+  actual: "🧖🏻‍♂"
+}, {
+  expected: "🧖🏼‍♂",
+  actual: "🧖🏼‍♂"
+}, {
+  expected: "🧖🏽‍♂",
+  actual: "🧖🏽‍♂"
+}, {
+  expected: "🧖🏾‍♂",
+  actual: "🧖🏾‍♂"
+}, {
+  expected: "🧖🏿‍♂",
+  actual: "🧖🏿‍♂"
+}, {
+  expected: "🧖🏻‍♀",
+  actual: "🧖🏻‍♀"
+}, {
+  expected: "🧖🏼‍♀",
+  actual: "🧖🏼‍♀"
+}, {
+  expected: "🧖🏽‍♀",
+  actual: "🧖🏽‍♀"
+}, {
+  expected: "🧖🏾‍♀",
+  actual: "🧖🏾‍♀"
+}, {
+  expected: "🧖🏿‍♀",
+  actual: "🧖🏿‍♀"
+}, {
+  expected: "🧗🏻‍♂",
+  actual: "🧗🏻‍♂"
+}, {
+  expected: "🧗🏼‍♂",
+  actual: "🧗🏼‍♂"
+}, {
+  expected: "🧗🏽‍♂",
+  actual: "🧗🏽‍♂"
+}, {
+  expected: "🧗🏾‍♂",
+  actual: "🧗🏾‍♂"
+}, {
+  expected: "🧗🏿‍♂",
+  actual: "🧗🏿‍♂"
+}, {
+  expected: "🧗🏻‍♀",
+  actual: "🧗🏻‍♀"
+}, {
+  expected: "🧗🏼‍♀",
+  actual: "🧗🏼‍♀"
+}, {
+  expected: "🧗🏽‍♀",
+  actual: "🧗🏽‍♀"
+}, {
+  expected: "🧗🏾‍♀",
+  actual: "🧗🏾‍♀"
+}, {
+  expected: "🧗🏿‍♀",
+  actual: "🧗🏿‍♀"
+}, {
+  expected: "🏌🏻‍♂",
+  actual: "🏌🏻‍♂"
+}, {
+  expected: "🏌🏼‍♂",
+  actual: "🏌🏼‍♂"
+}, {
+  expected: "🏌🏽‍♂",
+  actual: "🏌🏽‍♂"
+}, {
+  expected: "🏌🏾‍♂",
+  actual: "🏌🏾‍♂"
+}, {
+  expected: "🏌🏿‍♂",
+  actual: "🏌🏿‍♂"
+}, {
+  expected: "🏌🏻‍♀",
+  actual: "🏌🏻‍♀"
+}, {
+  expected: "🏌🏼‍♀",
+  actual: "🏌🏼‍♀"
+}, {
+  expected: "🏌🏽‍♀",
+  actual: "🏌🏽‍♀"
+}, {
+  expected: "🏌🏾‍♀",
+  actual: "🏌🏾‍♀"
+}, {
+  expected: "🏌🏿‍♀",
+  actual: "🏌🏿‍♀"
+}, {
+  expected: "🏄🏻‍♂",
+  actual: "🏄🏻‍♂"
+}, {
+  expected: "🏄🏼‍♂",
+  actual: "🏄🏼‍♂"
+}, {
+  expected: "🏄🏽‍♂",
+  actual: "🏄🏽‍♂"
+}, {
+  expected: "🏄🏾‍♂",
+  actual: "🏄🏾‍♂"
+}, {
+  expected: "🏄🏿‍♂",
+  actual: "🏄🏿‍♂"
+}, {
+  expected: "🏄🏻‍♀",
+  actual: "🏄🏻‍♀"
+}, {
+  expected: "🏄🏼‍♀",
+  actual: "🏄🏼‍♀"
+}, {
+  expected: "🏄🏽‍♀",
+  actual: "🏄🏽‍♀"
+}, {
+  expected: "🏄🏾‍♀",
+  actual: "🏄🏾‍♀"
+}, {
+  expected: "🏄🏿‍♀",
+  actual: "🏄🏿‍♀"
+}, {
+  expected: "🚣🏻‍♂",
+  actual: "🚣🏻‍♂"
+}, {
+  expected: "🚣🏼‍♂",
+  actual: "🚣🏼‍♂"
+}, {
+  expected: "🚣🏽‍♂",
+  actual: "🚣🏽‍♂"
+}, {
+  expected: "🚣🏾‍♂",
+  actual: "🚣🏾‍♂"
+}, {
+  expected: "🚣🏿‍♂",
+  actual: "🚣🏿‍♂"
+}, {
+  expected: "🚣🏻‍♀",
+  actual: "🚣🏻‍♀"
+}, {
+  expected: "🚣🏼‍♀",
+  actual: "🚣🏼‍♀"
+}, {
+  expected: "🚣🏽‍♀",
+  actual: "🚣🏽‍♀"
+}, {
+  expected: "🚣🏾‍♀",
+  actual: "🚣🏾‍♀"
+}, {
+  expected: "🚣🏿‍♀",
+  actual: "🚣🏿‍♀"
+}, {
+  expected: "🏊🏻‍♂",
+  actual: "🏊🏻‍♂"
+}, {
+  expected: "🏊🏼‍♂",
+  actual: "🏊🏼‍♂"
+}, {
+  expected: "🏊🏽‍♂",
+  actual: "🏊🏽‍♂"
+}, {
+  expected: "🏊🏾‍♂",
+  actual: "🏊🏾‍♂"
+}, {
+  expected: "🏊🏿‍♂",
+  actual: "🏊🏿‍♂"
+}, {
+  expected: "🏊🏻‍♀",
+  actual: "🏊🏻‍♀"
+}, {
+  expected: "🏊🏼‍♀",
+  actual: "🏊🏼‍♀"
+}, {
+  expected: "🏊🏽‍♀",
+  actual: "🏊🏽‍♀"
+}, {
+  expected: "🏊🏾‍♀",
+  actual: "🏊🏾‍♀"
+}, {
+  expected: "🏊🏿‍♀",
+  actual: "🏊🏿‍♀"
+}, {
+  expected: "🏋🏻‍♂",
+  actual: "🏋🏻‍♂"
+}, {
+  expected: "🏋🏼‍♂",
+  actual: "🏋🏼‍♂"
+}, {
+  expected: "🏋🏽‍♂",
+  actual: "🏋🏽‍♂"
+}, {
+  expected: "🏋🏾‍♂",
+  actual: "🏋🏾‍♂"
+}, {
+  expected: "🏋🏿‍♂",
+  actual: "🏋🏿‍♂"
+}, {
+  expected: "🏋🏻‍♀",
+  actual: "🏋🏻‍♀"
+}, {
+  expected: "🏋🏼‍♀",
+  actual: "🏋🏼‍♀"
+}, {
+  expected: "🏋🏽‍♀",
+  actual: "🏋🏽‍♀"
+}, {
+  expected: "🏋🏾‍♀",
+  actual: "🏋🏾‍♀"
+}, {
+  expected: "🏋🏿‍♀",
+  actual: "🏋🏿‍♀"
+}, {
+  expected: "🚴🏻‍♂",
+  actual: "🚴🏻‍♂"
+}, {
+  expected: "🚴🏼‍♂",
+  actual: "🚴🏼‍♂"
+}, {
+  expected: "🚴🏽‍♂",
+  actual: "🚴🏽‍♂"
+}, {
+  expected: "🚴🏾‍♂",
+  actual: "🚴🏾‍♂"
+}, {
+  expected: "🚴🏿‍♂",
+  actual: "🚴🏿‍♂"
+}, {
+  expected: "🚴🏻‍♀",
+  actual: "🚴🏻‍♀"
+}, {
+  expected: "🚴🏼‍♀",
+  actual: "🚴🏼‍♀"
+}, {
+  expected: "🚴🏽‍♀",
+  actual: "🚴🏽‍♀"
+}, {
+  expected: "🚴🏾‍♀",
+  actual: "🚴🏾‍♀"
+}, {
+  expected: "🚴🏿‍♀",
+  actual: "🚴🏿‍♀"
+}, {
+  expected: "🚵🏻‍♂",
+  actual: "🚵🏻‍♂"
+}, {
+  expected: "🚵🏼‍♂",
+  actual: "🚵🏼‍♂"
+}, {
+  expected: "🚵🏽‍♂",
+  actual: "🚵🏽‍♂"
+}, {
+  expected: "🚵🏾‍♂",
+  actual: "🚵🏾‍♂"
+}, {
+  expected: "🚵🏿‍♂",
+  actual: "🚵🏿‍♂"
+}, {
+  expected: "🚵🏻‍♀",
+  actual: "🚵🏻‍♀"
+}, {
+  expected: "🚵🏼‍♀",
+  actual: "🚵🏼‍♀"
+}, {
+  expected: "🚵🏽‍♀",
+  actual: "🚵🏽‍♀"
+}, {
+  expected: "🚵🏾‍♀",
+  actual: "🚵🏾‍♀"
+}, {
+  expected: "🚵🏿‍♀",
+  actual: "🚵🏿‍♀"
+}, {
+  expected: "🤸🏻‍♂",
+  actual: "🤸🏻‍♂"
+}, {
+  expected: "🤸🏼‍♂",
+  actual: "🤸🏼‍♂"
+}, {
+  expected: "🤸🏽‍♂",
+  actual: "🤸🏽‍♂"
+}, {
+  expected: "🤸🏾‍♂",
+  actual: "🤸🏾‍♂"
+}, {
+  expected: "🤸🏿‍♂",
+  actual: "🤸🏿‍♂"
+}, {
+  expected: "🤸🏻‍♀",
+  actual: "🤸🏻‍♀"
+}, {
+  expected: "🤸🏼‍♀",
+  actual: "🤸🏼‍♀"
+}, {
+  expected: "🤸🏽‍♀",
+  actual: "🤸🏽‍♀"
+}, {
+  expected: "🤸🏾‍♀",
+  actual: "🤸🏾‍♀"
+}, {
+  expected: "🤸🏿‍♀",
+  actual: "🤸🏿‍♀"
+}, {
+  expected: "🤽🏻‍♂",
+  actual: "🤽🏻‍♂"
+}, {
+  expected: "🤽🏼‍♂",
+  actual: "🤽🏼‍♂"
+}, {
+  expected: "🤽🏽‍♂",
+  actual: "🤽🏽‍♂"
+}, {
+  expected: "🤽🏾‍♂",
+  actual: "🤽🏾‍♂"
+}, {
+  expected: "🤽🏿‍♂",
+  actual: "🤽🏿‍♂"
+}, {
+  expected: "🤽🏻‍♀",
+  actual: "🤽🏻‍♀"
+}, {
+  expected: "🤽🏼‍♀",
+  actual: "🤽🏼‍♀"
+}, {
+  expected: "🤽🏽‍♀",
+  actual: "🤽🏽‍♀"
+}, {
+  expected: "🤽🏾‍♀",
+  actual: "🤽🏾‍♀"
+}, {
+  expected: "🤽🏿‍♀",
+  actual: "🤽🏿‍♀"
+}, {
+  expected: "🤾🏻‍♂",
+  actual: "🤾🏻‍♂"
+}, {
+  expected: "🤾🏼‍♂",
+  actual: "🤾🏼‍♂"
+}, {
+  expected: "🤾🏽‍♂",
+  actual: "🤾🏽‍♂"
+}, {
+  expected: "🤾🏾‍♂",
+  actual: "🤾🏾‍♂"
+}, {
+  expected: "🤾🏿‍♂",
+  actual: "🤾🏿‍♂"
+}, {
+  expected: "🤾🏻‍♀",
+  actual: "🤾🏻‍♀"
+}, {
+  expected: "🤾🏼‍♀",
+  actual: "🤾🏼‍♀"
+}, {
+  expected: "🤾🏽‍♀",
+  actual: "🤾🏽‍♀"
+}, {
+  expected: "🤾🏾‍♀",
+  actual: "🤾🏾‍♀"
+}, {
+  expected: "🤾🏿‍♀",
+  actual: "🤾🏿‍♀"
+}, {
+  expected: "🤹🏻‍♂",
+  actual: "🤹🏻‍♂"
+}, {
+  expected: "🤹🏼‍♂",
+  actual: "🤹🏼‍♂"
+}, {
+  expected: "🤹🏽‍♂",
+  actual: "🤹🏽‍♂"
+}, {
+  expected: "🤹🏾‍♂",
+  actual: "🤹🏾‍♂"
+}, {
+  expected: "🤹🏿‍♂",
+  actual: "🤹🏿‍♂"
+}, {
+  expected: "🤹🏻‍♀",
+  actual: "🤹🏻‍♀"
+}, {
+  expected: "🤹🏼‍♀",
+  actual: "🤹🏼‍♀"
+}, {
+  expected: "🤹🏽‍♀",
+  actual: "🤹🏽‍♀"
+}, {
+  expected: "🤹🏾‍♀",
+  actual: "🤹🏾‍♀"
+}, {
+  expected: "🤹🏿‍♀",
+  actual: "🤹🏿‍♀"
+}, {
+  expected: "🧘🏻‍♂",
+  actual: "🧘🏻‍♂"
+}, {
+  expected: "🧘🏼‍♂",
+  actual: "🧘🏼‍♂"
+}, {
+  expected: "🧘🏽‍♂",
+  actual: "🧘🏽‍♂"
+}, {
+  expected: "🧘🏾‍♂",
+  actual: "🧘🏾‍♂"
+}, {
+  expected: "🧘🏿‍♂",
+  actual: "🧘🏿‍♂"
+}, {
+  expected: "🧘🏻‍♀",
+  actual: "🧘🏻‍♀"
+}, {
+  expected: "🧘🏼‍♀",
+  actual: "🧘🏼‍♀"
+}, {
+  expected: "🧘🏽‍♀",
+  actual: "🧘🏽‍♀"
+}, {
+  expected: "🧘🏾‍♀",
+  actual: "🧘🏾‍♀"
+}, {
+  expected: "🧘🏿‍♀",
+  actual: "🧘🏿‍♀"
+}, {
+  expected: "🏳️‍🌈",
+  actual: "🏳️‍🌈"
+}, {
+  expected: "❤️‍🔥",
+  actual: "❤️‍🔥"
+}, {
+  expected: "❤️‍🩹",
+  actual: "❤️‍🩹"
+}, {
+  expected: "🧔‍♂️",
+  actual: "🧔‍♂️"
+}, {
+  expected: "🧔‍♀️",
+  actual: "🧔‍♀️"
+}, {
+  expected: "👱‍♀️",
+  actual: "👱‍♀️"
+}, {
+  expected: "👱‍♂️",
+  actual: "👱‍♂️"
+}, {
+  expected: "🙍‍♂️",
+  actual: "🙍‍♂️"
+}, {
+  expected: "🙍‍♀️",
+  actual: "🙍‍♀️"
+}, {
+  expected: "🙎‍♂️",
+  actual: "🙎‍♂️"
+}, {
+  expected: "🙎‍♀️",
+  actual: "🙎‍♀️"
+}, {
+  expected: "🙅‍♂️",
+  actual: "🙅‍♂️"
+}, {
+  expected: "🙅‍♀️",
+  actual: "🙅‍♀️"
+}, {
+  expected: "🙆‍♂️",
+  actual: "🙆‍♂️"
+}, {
+  expected: "🙆‍♀️",
+  actual: "🙆‍♀️"
+}, {
+  expected: "💁‍♂️",
+  actual: "💁‍♂️"
+}, {
+  expected: "💁‍♀️",
+  actual: "💁‍♀️"
+}, {
+  expected: "🙋‍♂️",
+  actual: "🙋‍♂️"
+}, {
+  expected: "🙋‍♀️",
+  actual: "🙋‍♀️"
+}, {
+  expected: "🧏‍♂️",
+  actual: "🧏‍♂️"
+}, {
+  expected: "🧏‍♀️",
+  actual: "🧏‍♀️"
+}, {
+  expected: "🙇‍♂️",
+  actual: "🙇‍♂️"
+}, {
+  expected: "🙇‍♀️",
+  actual: "🙇‍♀️"
+}, {
+  expected: "🤦‍♂️",
+  actual: "🤦‍♂️"
+}, {
+  expected: "🤦‍♀️",
+  actual: "🤦‍♀️"
+}, {
+  expected: "🤷‍♂️",
+  actual: "🤷‍♂️"
+}, {
+  expected: "🤷‍♀️",
+  actual: "🤷‍♀️"
+}, {
+  expected: "🧑‍⚕️",
+  actual: "🧑‍⚕️"
+}, {
+  expected: "👨‍⚕️",
+  actual: "👨‍⚕️"
+}, {
+  expected: "👩‍⚕️",
+  actual: "👩‍⚕️"
+}, {
+  expected: "🧑‍⚖️",
+  actual: "🧑‍⚖️"
+}, {
+  expected: "👨‍⚖️",
+  actual: "👨‍⚖️"
+}, {
+  expected: "👩‍⚖️",
+  actual: "👩‍⚖️"
+}, {
+  expected: "🧑‍✈️",
+  actual: "🧑‍✈️"
+}, {
+  expected: "👨‍✈️",
+  actual: "👨‍✈️"
+}, {
+  expected: "👩‍✈️",
+  actual: "👩‍✈️"
+}, {
+  expected: "👮‍♂️",
+  actual: "👮‍♂️"
+}, {
+  expected: "👮‍♀️",
+  actual: "👮‍♀️"
+}, {
+  expected: "🕵‍♂️",
+  actual: "🕵‍♂️"
+}, {
+  expected: "🕵️‍♂",
+  actual: "🕵️‍♂"
+}, {
+  expected: "🕵‍♀️",
+  actual: "🕵‍♀️"
+}, {
+  expected: "🕵️‍♀",
+  actual: "🕵️‍♀"
+}, {
+  expected: "💂‍♂️",
+  actual: "💂‍♂️"
+}, {
+  expected: "💂‍♀️",
+  actual: "💂‍♀️"
+}, {
+  expected: "👷‍♂️",
+  actual: "👷‍♂️"
+}, {
+  expected: "👷‍♀️",
+  actual: "👷‍♀️"
+}, {
+  expected: "👳‍♂️",
+  actual: "👳‍♂️"
+}, {
+  expected: "👳‍♀️",
+  actual: "👳‍♀️"
+}, {
+  expected: "🤵‍♂️",
+  actual: "🤵‍♂️"
+}, {
+  expected: "🤵‍♀️",
+  actual: "🤵‍♀️"
+}, {
+  expected: "👰‍♂️",
+  actual: "👰‍♂️"
+}, {
+  expected: "👰‍♀️",
+  actual: "👰‍♀️"
+}, {
+  expected: "🦸‍♂️",
+  actual: "🦸‍♂️"
+}, {
+  expected: "🦸‍♀️",
+  actual: "🦸‍♀️"
+}, {
+  expected: "🦹‍♂️",
+  actual: "🦹‍♂️"
+}, {
+  expected: "🦹‍♀️",
+  actual: "🦹‍♀️"
+}, {
+  expected: "🧙‍♂️",
+  actual: "🧙‍♂️"
+}, {
+  expected: "🧙‍♀️",
+  actual: "🧙‍♀️"
+}, {
+  expected: "🧚‍♂️",
+  actual: "🧚‍♂️"
+}, {
+  expected: "🧚‍♀️",
+  actual: "🧚‍♀️"
+}, {
+  expected: "🧛‍♂️",
+  actual: "🧛‍♂️"
+}, {
+  expected: "🧛‍♀️",
+  actual: "🧛‍♀️"
+}, {
+  expected: "🧜‍♂️",
+  actual: "🧜‍♂️"
+}, {
+  expected: "🧜‍♀️",
+  actual: "🧜‍♀️"
+}, {
+  expected: "🧝‍♂️",
+  actual: "🧝‍♂️"
+}, {
+  expected: "🧝‍♀️",
+  actual: "🧝‍♀️"
+}, {
+  expected: "🧞‍♂️",
+  actual: "🧞‍♂️"
+}, {
+  expected: "🧞‍♀️",
+  actual: "🧞‍♀️"
+}, {
+  expected: "🧟‍♂️",
+  actual: "🧟‍♂️"
+}, {
+  expected: "🧟‍♀️",
+  actual: "🧟‍♀️"
+}, {
+  expected: "💆‍♂️",
+  actual: "💆‍♂️"
+}, {
+  expected: "💆‍♀️",
+  actual: "💆‍♀️"
+}, {
+  expected: "💇‍♂️",
+  actual: "💇‍♂️"
+}, {
+  expected: "💇‍♀️",
+  actual: "💇‍♀️"
+}, {
+  expected: "🚶‍♂️",
+  actual: "🚶‍♂️"
+}, {
+  expected: "🚶‍♀️",
+  actual: "🚶‍♀️"
+}, {
+  expected: "🧍‍♂️",
+  actual: "🧍‍♂️"
+}, {
+  expected: "🧍‍♀️",
+  actual: "🧍‍♀️"
+}, {
+  expected: "🧎‍♂️",
+  actual: "🧎‍♂️"
+}, {
+  expected: "🧎‍♀️",
+  actual: "🧎‍♀️"
+}, {
+  expected: "🏃‍♂️",
+  actual: "🏃‍♂️"
+}, {
+  expected: "🏃‍♀️",
+  actual: "🏃‍♀️"
+}, {
+  expected: "👯‍♂️",
+  actual: "👯‍♂️"
+}, {
+  expected: "👯‍♀️",
+  actual: "👯‍♀️"
+}, {
+  expected: "🧖‍♂️",
+  actual: "🧖‍♂️"
+}, {
+  expected: "🧖‍♀️",
+  actual: "🧖‍♀️"
+}, {
+  expected: "🧗‍♂️",
+  actual: "🧗‍♂️"
+}, {
+  expected: "🧗‍♀️",
+  actual: "🧗‍♀️"
+}, {
+  expected: "🏌‍♂️",
+  actual: "🏌‍♂️"
+}, {
+  expected: "🏌️‍♂",
+  actual: "🏌️‍♂"
+}, {
+  expected: "🏌‍♀️",
+  actual: "🏌‍♀️"
+}, {
+  expected: "🏌️‍♀",
+  actual: "🏌️‍♀"
+}, {
+  expected: "🏄‍♂️",
+  actual: "🏄‍♂️"
+}, {
+  expected: "🏄‍♀️",
+  actual: "🏄‍♀️"
+}, {
+  expected: "🚣‍♂️",
+  actual: "🚣‍♂️"
+}, {
+  expected: "🚣‍♀️",
+  actual: "🚣‍♀️"
+}, {
+  expected: "🏊‍♂️",
+  actual: "🏊‍♂️"
+}, {
+  expected: "🏊‍♀️",
+  actual: "🏊‍♀️"
+}, {
+  expected: "⛹🏻‍♂",
+  actual: "⛹🏻‍♂"
+}, {
+  expected: "⛹🏼‍♂",
+  actual: "⛹🏼‍♂"
+}, {
+  expected: "⛹🏽‍♂",
+  actual: "⛹🏽‍♂"
+}, {
+  expected: "⛹🏾‍♂",
+  actual: "⛹🏾‍♂"
+}, {
+  expected: "⛹🏿‍♂",
+  actual: "⛹🏿‍♂"
+}, {
+  expected: "⛹🏻‍♀",
+  actual: "⛹🏻‍♀"
+}, {
+  expected: "⛹🏼‍♀",
+  actual: "⛹🏼‍♀"
+}, {
+  expected: "⛹🏽‍♀",
+  actual: "⛹🏽‍♀"
+}, {
+  expected: "⛹🏾‍♀",
+  actual: "⛹🏾‍♀"
+}, {
+  expected: "⛹🏿‍♀",
+  actual: "⛹🏿‍♀"
+}, {
+  expected: "🏋‍♂️",
+  actual: "🏋‍♂️"
+}, {
+  expected: "🏋️‍♂",
+  actual: "🏋️‍♂"
+}, {
+  expected: "🏋‍♀️",
+  actual: "🏋‍♀️"
+}, {
+  expected: "🏋️‍♀",
+  actual: "🏋️‍♀"
+}, {
+  expected: "🚴‍♂️",
+  actual: "🚴‍♂️"
+}, {
+  expected: "🚴‍♀️",
+  actual: "🚴‍♀️"
+}, {
+  expected: "🚵‍♂️",
+  actual: "🚵‍♂️"
+}, {
+  expected: "🚵‍♀️",
+  actual: "🚵‍♀️"
+}, {
+  expected: "🤸‍♂️",
+  actual: "🤸‍♂️"
+}, {
+  expected: "🤸‍♀️",
+  actual: "🤸‍♀️"
+}, {
+  expected: "🤼‍♂️",
+  actual: "🤼‍♂️"
+}, {
+  expected: "🤼‍♀️",
+  actual: "🤼‍♀️"
+}, {
+  expected: "🤽‍♂️",
+  actual: "🤽‍♂️"
+}, {
+  expected: "🤽‍♀️",
+  actual: "🤽‍♀️"
+}, {
+  expected: "🤾‍♂️",
+  actual: "🤾‍♂️"
+}, {
+  expected: "🤾‍♀️",
+  actual: "🤾‍♀️"
+}, {
+  expected: "🤹‍♂️",
+  actual: "🤹‍♂️"
+}, {
+  expected: "🤹‍♀️",
+  actual: "🤹‍♀️"
+}, {
+  expected: "🧘‍♂️",
+  actual: "🧘‍♂️"
+}, {
+  expected: "🧘‍♀️",
+  actual: "🧘‍♀️"
+}, {
+  expected: "🐻‍❄️",
+  actual: "🐻‍❄️"
+}, {
+  expected: "🏳‍⚧️",
+  actual: "🏳‍⚧️"
+}, {
+  expected: "🏳️‍⚧",
+  actual: "🏳️‍⚧"
+}, {
+  expected: "🏴‍☠️",
+  actual: "🏴‍☠️"
+}, {
+  expected: "🏃‍➡️",
+  actual: "🏃‍➡️"
+}, {
+  expected: "🙂‍↔️",
+  actual: "🙂‍↔️"
+}, {
+  expected: "🙂‍↕️",
+  actual: "🙂‍↕️"
+}, {
+  expected: "🚶‍➡️",
+  actual: "🚶‍➡️"
+}, {
+  expected: "🧎‍➡️",
+  actual: "🧎‍➡️"
+}, {
+  expected: "⛓️‍💥",
+  actual: "⛓️‍💥"
+}, {
+  expected: "👨🏻‍🦰",
+  actual: "👨🏻🦰"
+}, {
+  expected: "👨🏼‍🦰",
+  actual: "👨🏼🦰"
+}, {
+  expected: "👨🏽‍🦰",
+  actual: "👨🏽🦰"
+}, {
+  expected: "👨🏾‍🦰",
+  actual: "👨🏾🦰"
+}, {
+  expected: "👨🏿‍🦰",
+  actual: "👨🏿🦰"
+}, {
+  expected: "👨🏻‍🦱",
+  actual: "👨🏻🦱"
+}, {
+  expected: "👨🏼‍🦱",
+  actual: "👨🏼🦱"
+}, {
+  expected: "👨🏽‍🦱",
+  actual: "👨🏽🦱"
+}, {
+  expected: "👨🏾‍🦱",
+  actual: "👨🏾🦱"
+}, {
+  expected: "👨🏿‍🦱",
+  actual: "👨🏿🦱"
+}, {
+  expected: "👨🏻‍🦳",
+  actual: "👨🏻🦳"
+}, {
+  expected: "👨🏼‍🦳",
+  actual: "👨🏼🦳"
+}, {
+  expected: "👨🏽‍🦳",
+  actual: "👨🏽🦳"
+}, {
+  expected: "👨🏾‍🦳",
+  actual: "👨🏾🦳"
+}, {
+  expected: "👨🏿‍🦳",
+  actual: "👨🏿🦳"
+}, {
+  expected: "👨🏻‍🦲",
+  actual: "👨🏻🦲"
+}, {
+  expected: "👨🏼‍🦲",
+  actual: "👨🏼🦲"
+}, {
+  expected: "👨🏽‍🦲",
+  actual: "👨🏽🦲"
+}, {
+  expected: "👨🏾‍🦲",
+  actual: "👨🏾🦲"
+}, {
+  expected: "👨🏿‍🦲",
+  actual: "👨🏿🦲"
+}, {
+  expected: "👩🏻‍🦰",
+  actual: "👩🏻🦰"
+}, {
+  expected: "👩🏼‍🦰",
+  actual: "👩🏼🦰"
+}, {
+  expected: "👩🏽‍🦰",
+  actual: "👩🏽🦰"
+}, {
+  expected: "👩🏾‍🦰",
+  actual: "👩🏾🦰"
+}, {
+  expected: "👩🏿‍🦰",
+  actual: "👩🏿🦰"
+}, {
+  expected: "🧑🏻‍🦰",
+  actual: "🧑🏻🦰"
+}, {
+  expected: "🧑🏼‍🦰",
+  actual: "🧑🏼🦰"
+}, {
+  expected: "🧑🏽‍🦰",
+  actual: "🧑🏽🦰"
+}, {
+  expected: "🧑🏾‍🦰",
+  actual: "🧑🏾🦰"
+}, {
+  expected: "🧑🏿‍🦰",
+  actual: "🧑🏿🦰"
+}, {
+  expected: "👩🏻‍🦱",
+  actual: "👩🏻🦱"
+}, {
+  expected: "👩🏼‍🦱",
+  actual: "👩🏼🦱"
+}, {
+  expected: "👩🏽‍🦱",
+  actual: "👩🏽🦱"
+}, {
+  expected: "👩🏾‍🦱",
+  actual: "👩🏾🦱"
+}, {
+  expected: "👩🏿‍🦱",
+  actual: "👩🏿🦱"
+}, {
+  expected: "🧑🏻‍🦱",
+  actual: "🧑🏻🦱"
+}, {
+  expected: "🧑🏼‍🦱",
+  actual: "🧑🏼🦱"
+}, {
+  expected: "🧑🏽‍🦱",
+  actual: "🧑🏽🦱"
+}, {
+  expected: "🧑🏾‍🦱",
+  actual: "🧑🏾🦱"
+}, {
+  expected: "🧑🏿‍🦱",
+  actual: "🧑🏿🦱"
+}, {
+  expected: "👩🏻‍🦳",
+  actual: "👩🏻🦳"
+}, {
+  expected: "👩🏼‍🦳",
+  actual: "👩🏼🦳"
+}, {
+  expected: "👩🏽‍🦳",
+  actual: "👩🏽🦳"
+}, {
+  expected: "👩🏾‍🦳",
+  actual: "👩🏾🦳"
+}, {
+  expected: "👩🏿‍🦳",
+  actual: "👩🏿🦳"
+}, {
+  expected: "🧑🏻‍🦳",
+  actual: "🧑🏻🦳"
+}, {
+  expected: "🧑🏼‍🦳",
+  actual: "🧑🏼🦳"
+}, {
+  expected: "🧑🏽‍🦳",
+  actual: "🧑🏽🦳"
+}, {
+  expected: "🧑🏾‍🦳",
+  actual: "🧑🏾🦳"
+}, {
+  expected: "🧑🏿‍🦳",
+  actual: "🧑🏿🦳"
+}, {
+  expected: "👩🏻‍🦲",
+  actual: "👩🏻🦲"
+}, {
+  expected: "👩🏼‍🦲",
+  actual: "👩🏼🦲"
+}, {
+  expected: "👩🏽‍🦲",
+  actual: "👩🏽🦲"
+}, {
+  expected: "👩🏾‍🦲",
+  actual: "👩🏾🦲"
+}, {
+  expected: "👩🏿‍🦲",
+  actual: "👩🏿🦲"
+}, {
+  expected: "🧑🏻‍🦲",
+  actual: "🧑🏻🦲"
+}, {
+  expected: "🧑🏼‍🦲",
+  actual: "🧑🏼🦲"
+}, {
+  expected: "🧑🏽‍🦲",
+  actual: "🧑🏽🦲"
+}, {
+  expected: "🧑🏾‍🦲",
+  actual: "🧑🏾🦲"
+}, {
+  expected: "🧑🏿‍🦲",
+  actual: "🧑🏿🦲"
+}, {
+  expected: "🧑🏻‍🎓",
+  actual: "🧑🏻🎓"
+}, {
+  expected: "🧑🏼‍🎓",
+  actual: "🧑🏼🎓"
+}, {
+  expected: "🧑🏽‍🎓",
+  actual: "🧑🏽🎓"
+}, {
+  expected: "🧑🏾‍🎓",
+  actual: "🧑🏾🎓"
+}, {
+  expected: "🧑🏿‍🎓",
+  actual: "🧑🏿🎓"
+}, {
+  expected: "👨🏻‍🎓",
+  actual: "👨🏻🎓"
+}, {
+  expected: "👨🏼‍🎓",
+  actual: "👨🏼🎓"
+}, {
+  expected: "👨🏽‍🎓",
+  actual: "👨🏽🎓"
+}, {
+  expected: "👨🏾‍🎓",
+  actual: "👨🏾🎓"
+}, {
+  expected: "👨🏿‍🎓",
+  actual: "👨🏿🎓"
+}, {
+  expected: "👩🏻‍🎓",
+  actual: "👩🏻🎓"
+}, {
+  expected: "👩🏼‍🎓",
+  actual: "👩🏼🎓"
+}, {
+  expected: "👩🏽‍🎓",
+  actual: "👩🏽🎓"
+}, {
+  expected: "👩🏾‍🎓",
+  actual: "👩🏾🎓"
+}, {
+  expected: "👩🏿‍🎓",
+  actual: "👩🏿🎓"
+}, {
+  expected: "🧑🏻‍🏫",
+  actual: "🧑🏻🏫"
+}, {
+  expected: "🧑🏼‍🏫",
+  actual: "🧑🏼🏫"
+}, {
+  expected: "🧑🏽‍🏫",
+  actual: "🧑🏽🏫"
+}, {
+  expected: "🧑🏾‍🏫",
+  actual: "🧑🏾🏫"
+}, {
+  expected: "🧑🏿‍🏫",
+  actual: "🧑🏿🏫"
+}, {
+  expected: "👨🏻‍🏫",
+  actual: "👨🏻🏫"
+}, {
+  expected: "👨🏼‍🏫",
+  actual: "👨🏼🏫"
+}, {
+  expected: "👨🏽‍🏫",
+  actual: "👨🏽🏫"
+}, {
+  expected: "👨🏾‍🏫",
+  actual: "👨🏾🏫"
+}, {
+  expected: "👨🏿‍🏫",
+  actual: "👨🏿🏫"
+}, {
+  expected: "👩🏻‍🏫",
+  actual: "👩🏻🏫"
+}, {
+  expected: "👩🏼‍🏫",
+  actual: "👩🏼🏫"
+}, {
+  expected: "👩🏽‍🏫",
+  actual: "👩🏽🏫"
+}, {
+  expected: "👩🏾‍🏫",
+  actual: "👩🏾🏫"
+}, {
+  expected: "👩🏿‍🏫",
+  actual: "👩🏿🏫"
+}, {
+  expected: "🧑🏻‍🌾",
+  actual: "🧑🏻🌾"
+}, {
+  expected: "🧑🏼‍🌾",
+  actual: "🧑🏼🌾"
+}, {
+  expected: "🧑🏽‍🌾",
+  actual: "🧑🏽🌾"
+}, {
+  expected: "🧑🏾‍🌾",
+  actual: "🧑🏾🌾"
+}, {
+  expected: "🧑🏿‍🌾",
+  actual: "🧑🏿🌾"
+}, {
+  expected: "👨🏻‍🌾",
+  actual: "👨🏻🌾"
+}, {
+  expected: "👨🏼‍🌾",
+  actual: "👨🏼🌾"
+}, {
+  expected: "👨🏽‍🌾",
+  actual: "👨🏽🌾"
+}, {
+  expected: "👨🏾‍🌾",
+  actual: "👨🏾🌾"
+}, {
+  expected: "👨🏿‍🌾",
+  actual: "👨🏿🌾"
+}, {
+  expected: "👩🏻‍🌾",
+  actual: "👩🏻🌾"
+}, {
+  expected: "👩🏼‍🌾",
+  actual: "👩🏼🌾"
+}, {
+  expected: "👩🏽‍🌾",
+  actual: "👩🏽🌾"
+}, {
+  expected: "👩🏾‍🌾",
+  actual: "👩🏾🌾"
+}, {
+  expected: "👩🏿‍🌾",
+  actual: "👩🏿🌾"
+}, {
+  expected: "🧑🏻‍🍳",
+  actual: "🧑🏻🍳"
+}, {
+  expected: "🧑🏼‍🍳",
+  actual: "🧑🏼🍳"
+}, {
+  expected: "🧑🏽‍🍳",
+  actual: "🧑🏽🍳"
+}, {
+  expected: "🧑🏾‍🍳",
+  actual: "🧑🏾🍳"
+}, {
+  expected: "🧑🏿‍🍳",
+  actual: "🧑🏿🍳"
+}, {
+  expected: "👨🏻‍🍳",
+  actual: "👨🏻🍳"
+}, {
+  expected: "👨🏼‍🍳",
+  actual: "👨🏼🍳"
+}, {
+  expected: "👨🏽‍🍳",
+  actual: "👨🏽🍳"
+}, {
+  expected: "👨🏾‍🍳",
+  actual: "👨🏾🍳"
+}, {
+  expected: "👨🏿‍🍳",
+  actual: "👨🏿🍳"
+}, {
+  expected: "👩🏻‍🍳",
+  actual: "👩🏻🍳"
+}, {
+  expected: "👩🏼‍🍳",
+  actual: "👩🏼🍳"
+}, {
+  expected: "👩🏽‍🍳",
+  actual: "👩🏽🍳"
+}, {
+  expected: "👩🏾‍🍳",
+  actual: "👩🏾🍳"
+}, {
+  expected: "👩🏿‍🍳",
+  actual: "👩🏿🍳"
+}, {
+  expected: "🧑🏻‍🔧",
+  actual: "🧑🏻🔧"
+}, {
+  expected: "🧑🏼‍🔧",
+  actual: "🧑🏼🔧"
+}, {
+  expected: "🧑🏽‍🔧",
+  actual: "🧑🏽🔧"
+}, {
+  expected: "🧑🏾‍🔧",
+  actual: "🧑🏾🔧"
+}, {
+  expected: "🧑🏿‍🔧",
+  actual: "🧑🏿🔧"
+}, {
+  expected: "👨🏻‍🔧",
+  actual: "👨🏻🔧"
+}, {
+  expected: "👨🏼‍🔧",
+  actual: "👨🏼🔧"
+}, {
+  expected: "👨🏽‍🔧",
+  actual: "👨🏽🔧"
+}, {
+  expected: "👨🏾‍🔧",
+  actual: "👨🏾🔧"
+}, {
+  expected: "👨🏿‍🔧",
+  actual: "👨🏿🔧"
+}, {
+  expected: "👩🏻‍🔧",
+  actual: "👩🏻🔧"
+}, {
+  expected: "👩🏼‍🔧",
+  actual: "👩🏼🔧"
+}, {
+  expected: "👩🏽‍🔧",
+  actual: "👩🏽🔧"
+}, {
+  expected: "👩🏾‍🔧",
+  actual: "👩🏾🔧"
+}, {
+  expected: "👩🏿‍🔧",
+  actual: "👩🏿🔧"
+}, {
+  expected: "🧑🏻‍🏭",
+  actual: "🧑🏻🏭"
+}, {
+  expected: "🧑🏼‍🏭",
+  actual: "🧑🏼🏭"
+}, {
+  expected: "🧑🏽‍🏭",
+  actual: "🧑🏽🏭"
+}, {
+  expected: "🧑🏾‍🏭",
+  actual: "🧑🏾🏭"
+}, {
+  expected: "🧑🏿‍🏭",
+  actual: "🧑🏿🏭"
+}, {
+  expected: "👨🏻‍🏭",
+  actual: "👨🏻🏭"
+}, {
+  expected: "👨🏼‍🏭",
+  actual: "👨🏼🏭"
+}, {
+  expected: "👨🏽‍🏭",
+  actual: "👨🏽🏭"
+}, {
+  expected: "👨🏾‍🏭",
+  actual: "👨🏾🏭"
+}, {
+  expected: "👨🏿‍🏭",
+  actual: "👨🏿🏭"
+}, {
+  expected: "👩🏻‍🏭",
+  actual: "👩🏻🏭"
+}, {
+  expected: "👩🏼‍🏭",
+  actual: "👩🏼🏭"
+}, {
+  expected: "👩🏽‍🏭",
+  actual: "👩🏽🏭"
+}, {
+  expected: "👩🏾‍🏭",
+  actual: "👩🏾🏭"
+}, {
+  expected: "👩🏿‍🏭",
+  actual: "👩🏿🏭"
+}, {
+  expected: "🧑🏻‍💼",
+  actual: "🧑🏻💼"
+}, {
+  expected: "🧑🏼‍💼",
+  actual: "🧑🏼💼"
+}, {
+  expected: "🧑🏽‍💼",
+  actual: "🧑🏽💼"
+}, {
+  expected: "🧑🏾‍💼",
+  actual: "🧑🏾💼"
+}, {
+  expected: "🧑🏿‍💼",
+  actual: "🧑🏿💼"
+}, {
+  expected: "👨🏻‍💼",
+  actual: "👨🏻💼"
+}, {
+  expected: "👨🏼‍💼",
+  actual: "👨🏼💼"
+}, {
+  expected: "👨🏽‍💼",
+  actual: "👨🏽💼"
+}, {
+  expected: "👨🏾‍💼",
+  actual: "👨🏾💼"
+}, {
+  expected: "👨🏿‍💼",
+  actual: "👨🏿💼"
+}, {
+  expected: "👩🏻‍💼",
+  actual: "👩🏻💼"
+}, {
+  expected: "👩🏼‍💼",
+  actual: "👩🏼💼"
+}, {
+  expected: "👩🏽‍💼",
+  actual: "👩🏽💼"
+}, {
+  expected: "👩🏾‍💼",
+  actual: "👩🏾💼"
+}, {
+  expected: "👩🏿‍💼",
+  actual: "👩🏿💼"
+}, {
+  expected: "🧑🏻‍🔬",
+  actual: "🧑🏻🔬"
+}, {
+  expected: "🧑🏼‍🔬",
+  actual: "🧑🏼🔬"
+}, {
+  expected: "🧑🏽‍🔬",
+  actual: "🧑🏽🔬"
+}, {
+  expected: "🧑🏾‍🔬",
+  actual: "🧑🏾🔬"
+}, {
+  expected: "🧑🏿‍🔬",
+  actual: "🧑🏿🔬"
+}, {
+  expected: "👨🏻‍🔬",
+  actual: "👨🏻🔬"
+}, {
+  expected: "👨🏼‍🔬",
+  actual: "👨🏼🔬"
+}, {
+  expected: "👨🏽‍🔬",
+  actual: "👨🏽🔬"
+}, {
+  expected: "👨🏾‍🔬",
+  actual: "👨🏾🔬"
+}, {
+  expected: "👨🏿‍🔬",
+  actual: "👨🏿🔬"
+}, {
+  expected: "👩🏻‍🔬",
+  actual: "👩🏻🔬"
+}, {
+  expected: "👩🏼‍🔬",
+  actual: "👩🏼🔬"
+}, {
+  expected: "👩🏽‍🔬",
+  actual: "👩🏽🔬"
+}, {
+  expected: "👩🏾‍🔬",
+  actual: "👩🏾🔬"
+}, {
+  expected: "👩🏿‍🔬",
+  actual: "👩🏿🔬"
+}, {
+  expected: "🧑🏻‍💻",
+  actual: "🧑🏻💻"
+}, {
+  expected: "🧑🏼‍💻",
+  actual: "🧑🏼💻"
+}, {
+  expected: "🧑🏽‍💻",
+  actual: "🧑🏽💻"
+}, {
+  expected: "🧑🏾‍💻",
+  actual: "🧑🏾💻"
+}, {
+  expected: "🧑🏿‍💻",
+  actual: "🧑🏿💻"
+}, {
+  expected: "👨🏻‍💻",
+  actual: "👨🏻💻"
+}, {
+  expected: "👨🏼‍💻",
+  actual: "👨🏼💻"
+}, {
+  expected: "👨🏽‍💻",
+  actual: "👨🏽💻"
+}, {
+  expected: "👨🏾‍💻",
+  actual: "👨🏾💻"
+}, {
+  expected: "👨🏿‍💻",
+  actual: "👨🏿💻"
+}, {
+  expected: "👩🏻‍💻",
+  actual: "👩🏻💻"
+}, {
+  expected: "👩🏼‍💻",
+  actual: "👩🏼💻"
+}, {
+  expected: "👩🏽‍💻",
+  actual: "👩🏽💻"
+}, {
+  expected: "👩🏾‍💻",
+  actual: "👩🏾💻"
+}, {
+  expected: "👩🏿‍💻",
+  actual: "👩🏿💻"
+}, {
+  expected: "🧑🏻‍🎤",
+  actual: "🧑🏻🎤"
+}, {
+  expected: "🧑🏼‍🎤",
+  actual: "🧑🏼🎤"
+}, {
+  expected: "🧑🏽‍🎤",
+  actual: "🧑🏽🎤"
+}, {
+  expected: "🧑🏾‍🎤",
+  actual: "🧑🏾🎤"
+}, {
+  expected: "🧑🏿‍🎤",
+  actual: "🧑🏿🎤"
+}, {
+  expected: "👨🏻‍🎤",
+  actual: "👨🏻🎤"
+}, {
+  expected: "👨🏼‍🎤",
+  actual: "👨🏼🎤"
+}, {
+  expected: "👨🏽‍🎤",
+  actual: "👨🏽🎤"
+}, {
+  expected: "👨🏾‍🎤",
+  actual: "👨🏾🎤"
+}, {
+  expected: "👨🏿‍🎤",
+  actual: "👨🏿🎤"
+}, {
+  expected: "👩🏻‍🎤",
+  actual: "👩🏻🎤"
+}, {
+  expected: "👩🏼‍🎤",
+  actual: "👩🏼🎤"
+}, {
+  expected: "👩🏽‍🎤",
+  actual: "👩🏽🎤"
+}, {
+  expected: "👩🏾‍🎤",
+  actual: "👩🏾🎤"
+}, {
+  expected: "👩🏿‍🎤",
+  actual: "👩🏿🎤"
+}, {
+  expected: "🧑🏻‍🎨",
+  actual: "🧑🏻🎨"
+}, {
+  expected: "🧑🏼‍🎨",
+  actual: "🧑🏼🎨"
+}, {
+  expected: "🧑🏽‍🎨",
+  actual: "🧑🏽🎨"
+}, {
+  expected: "🧑🏾‍🎨",
+  actual: "🧑🏾🎨"
+}, {
+  expected: "🧑🏿‍🎨",
+  actual: "🧑🏿🎨"
+}, {
+  expected: "👨🏻‍🎨",
+  actual: "👨🏻🎨"
+}, {
+  expected: "👨🏼‍🎨",
+  actual: "👨🏼🎨"
+}, {
+  expected: "👨🏽‍🎨",
+  actual: "👨🏽🎨"
+}, {
+  expected: "👨🏾‍🎨",
+  actual: "👨🏾🎨"
+}, {
+  expected: "👨🏿‍🎨",
+  actual: "👨🏿🎨"
+}, {
+  expected: "👩🏻‍🎨",
+  actual: "👩🏻🎨"
+}, {
+  expected: "👩🏼‍🎨",
+  actual: "👩🏼🎨"
+}, {
+  expected: "👩🏽‍🎨",
+  actual: "👩🏽🎨"
+}, {
+  expected: "👩🏾‍🎨",
+  actual: "👩🏾🎨"
+}, {
+  expected: "👩🏿‍🎨",
+  actual: "👩🏿🎨"
+}, {
+  expected: "🧑🏻‍🚀",
+  actual: "🧑🏻🚀"
+}, {
+  expected: "🧑🏼‍🚀",
+  actual: "🧑🏼🚀"
+}, {
+  expected: "🧑🏽‍🚀",
+  actual: "🧑🏽🚀"
+}, {
+  expected: "🧑🏾‍🚀",
+  actual: "🧑🏾🚀"
+}, {
+  expected: "🧑🏿‍🚀",
+  actual: "🧑🏿🚀"
+}, {
+  expected: "👨🏻‍🚀",
+  actual: "👨🏻🚀"
+}, {
+  expected: "👨🏼‍🚀",
+  actual: "👨🏼🚀"
+}, {
+  expected: "👨🏽‍🚀",
+  actual: "👨🏽🚀"
+}, {
+  expected: "👨🏾‍🚀",
+  actual: "👨🏾🚀"
+}, {
+  expected: "👨🏿‍🚀",
+  actual: "👨🏿🚀"
+}, {
+  expected: "👩🏻‍🚀",
+  actual: "👩🏻🚀"
+}, {
+  expected: "👩🏼‍🚀",
+  actual: "👩🏼🚀"
+}, {
+  expected: "👩🏽‍🚀",
+  actual: "👩🏽🚀"
+}, {
+  expected: "👩🏾‍🚀",
+  actual: "👩🏾🚀"
+}, {
+  expected: "👩🏿‍🚀",
+  actual: "👩🏿🚀"
+}, {
+  expected: "🧑🏻‍🚒",
+  actual: "🧑🏻🚒"
+}, {
+  expected: "🧑🏼‍🚒",
+  actual: "🧑🏼🚒"
+}, {
+  expected: "🧑🏽‍🚒",
+  actual: "🧑🏽🚒"
+}, {
+  expected: "🧑🏾‍🚒",
+  actual: "🧑🏾🚒"
+}, {
+  expected: "🧑🏿‍🚒",
+  actual: "🧑🏿🚒"
+}, {
+  expected: "👨🏻‍🚒",
+  actual: "👨🏻🚒"
+}, {
+  expected: "👨🏼‍🚒",
+  actual: "👨🏼🚒"
+}, {
+  expected: "👨🏽‍🚒",
+  actual: "👨🏽🚒"
+}, {
+  expected: "👨🏾‍🚒",
+  actual: "👨🏾🚒"
+}, {
+  expected: "👨🏿‍🚒",
+  actual: "👨🏿🚒"
+}, {
+  expected: "👩🏻‍🚒",
+  actual: "👩🏻🚒"
+}, {
+  expected: "👩🏼‍🚒",
+  actual: "👩🏼🚒"
+}, {
+  expected: "👩🏽‍🚒",
+  actual: "👩🏽🚒"
+}, {
+  expected: "👩🏾‍🚒",
+  actual: "👩🏾🚒"
+}, {
+  expected: "👩🏿‍🚒",
+  actual: "👩🏿🚒"
+}, {
+  expected: "👩🏻‍🍼",
+  actual: "👩🏻🍼"
+}, {
+  expected: "👩🏼‍🍼",
+  actual: "👩🏼🍼"
+}, {
+  expected: "👩🏽‍🍼",
+  actual: "👩🏽🍼"
+}, {
+  expected: "👩🏾‍🍼",
+  actual: "👩🏾🍼"
+}, {
+  expected: "👩🏿‍🍼",
+  actual: "👩🏿🍼"
+}, {
+  expected: "👨🏻‍🍼",
+  actual: "👨🏻🍼"
+}, {
+  expected: "👨🏼‍🍼",
+  actual: "👨🏼🍼"
+}, {
+  expected: "👨🏽‍🍼",
+  actual: "👨🏽🍼"
+}, {
+  expected: "👨🏾‍🍼",
+  actual: "👨🏾🍼"
+}, {
+  expected: "👨🏿‍🍼",
+  actual: "👨🏿🍼"
+}, {
+  expected: "🧑🏻‍🍼",
+  actual: "🧑🏻🍼"
+}, {
+  expected: "🧑🏼‍🍼",
+  actual: "🧑🏼🍼"
+}, {
+  expected: "🧑🏽‍🍼",
+  actual: "🧑🏽🍼"
+}, {
+  expected: "🧑🏾‍🍼",
+  actual: "🧑🏾🍼"
+}, {
+  expected: "🧑🏿‍🍼",
+  actual: "🧑🏿🍼"
+}, {
+  expected: "🧑🏻‍🎄",
+  actual: "🧑🏻🎄"
+}, {
+  expected: "🧑🏼‍🎄",
+  actual: "🧑🏼🎄"
+}, {
+  expected: "🧑🏽‍🎄",
+  actual: "🧑🏽🎄"
+}, {
+  expected: "🧑🏾‍🎄",
+  actual: "🧑🏾🎄"
+}, {
+  expected: "🧑🏿‍🎄",
+  actual: "🧑🏿🎄"
+}, {
+  expected: "🧑🏻‍🦯",
+  actual: "🧑🏻🦯"
+}, {
+  expected: "🧑🏼‍🦯",
+  actual: "🧑🏼🦯"
+}, {
+  expected: "🧑🏽‍🦯",
+  actual: "🧑🏽🦯"
+}, {
+  expected: "🧑🏾‍🦯",
+  actual: "🧑🏾🦯"
+}, {
+  expected: "🧑🏿‍🦯",
+  actual: "🧑🏿🦯"
+}, {
+  expected: "👨🏻‍🦯",
+  actual: "👨🏻🦯"
+}, {
+  expected: "👨🏼‍🦯",
+  actual: "👨🏼🦯"
+}, {
+  expected: "👨🏽‍🦯",
+  actual: "👨🏽🦯"
+}, {
+  expected: "👨🏾‍🦯",
+  actual: "👨🏾🦯"
+}, {
+  expected: "👨🏿‍🦯",
+  actual: "👨🏿🦯"
+}, {
+  expected: "👩🏻‍🦯",
+  actual: "👩🏻🦯"
+}, {
+  expected: "👩🏼‍🦯",
+  actual: "👩🏼🦯"
+}, {
+  expected: "👩🏽‍🦯",
+  actual: "👩🏽🦯"
+}, {
+  expected: "👩🏾‍🦯",
+  actual: "👩🏾🦯"
+}, {
+  expected: "👩🏿‍🦯",
+  actual: "👩🏿🦯"
+}, {
+  expected: "🧑🏻‍🦼",
+  actual: "🧑🏻🦼"
+}, {
+  expected: "🧑🏼‍🦼",
+  actual: "🧑🏼🦼"
+}, {
+  expected: "🧑🏽‍🦼",
+  actual: "🧑🏽🦼"
+}, {
+  expected: "🧑🏾‍🦼",
+  actual: "🧑🏾🦼"
+}, {
+  expected: "🧑🏿‍🦼",
+  actual: "🧑🏿🦼"
+}, {
+  expected: "👨🏻‍🦼",
+  actual: "👨🏻🦼"
+}, {
+  expected: "👨🏼‍🦼",
+  actual: "👨🏼🦼"
+}, {
+  expected: "👨🏽‍🦼",
+  actual: "👨🏽🦼"
+}, {
+  expected: "👨🏾‍🦼",
+  actual: "👨🏾🦼"
+}, {
+  expected: "👨🏿‍🦼",
+  actual: "👨🏿🦼"
+}, {
+  expected: "👩🏻‍🦼",
+  actual: "👩🏻🦼"
+}, {
+  expected: "👩🏼‍🦼",
+  actual: "👩🏼🦼"
+}, {
+  expected: "👩🏽‍🦼",
+  actual: "👩🏽🦼"
+}, {
+  expected: "👩🏾‍🦼",
+  actual: "👩🏾🦼"
+}, {
+  expected: "👩🏿‍🦼",
+  actual: "👩🏿🦼"
+}, {
+  expected: "🧑🏻‍🦽",
+  actual: "🧑🏻🦽"
+}, {
+  expected: "🧑🏼‍🦽",
+  actual: "🧑🏼🦽"
+}, {
+  expected: "🧑🏽‍🦽",
+  actual: "🧑🏽🦽"
+}, {
+  expected: "🧑🏾‍🦽",
+  actual: "🧑🏾🦽"
+}, {
+  expected: "🧑🏿‍🦽",
+  actual: "🧑🏿🦽"
+}, {
+  expected: "👨🏻‍🦽",
+  actual: "👨🏻🦽"
+}, {
+  expected: "👨🏼‍🦽",
+  actual: "👨🏼🦽"
+}, {
+  expected: "👨🏽‍🦽",
+  actual: "👨🏽🦽"
+}, {
+  expected: "👨🏾‍🦽",
+  actual: "👨🏾🦽"
+}, {
+  expected: "👨🏿‍🦽",
+  actual: "👨🏿🦽"
+}, {
+  expected: "👩🏻‍🦽",
+  actual: "👩🏻🦽"
+}, {
+  expected: "👩🏼‍🦽",
+  actual: "👩🏼🦽"
+}, {
+  expected: "👩🏽‍🦽",
+  actual: "👩🏽🦽"
+}, {
+  expected: "👩🏾‍🦽",
+  actual: "👩🏾🦽"
+}, {
+  expected: "👩🏿‍🦽",
+  actual: "👩🏿🦽"
+}, {
+  expected: "⛹‍♂️",
+  actual: "⛹‍♂️"
+}, {
+  expected: "⛹️‍♂",
+  actual: "⛹️‍♂"
+}, {
+  expected: "⛹‍♀️",
+  actual: "⛹‍♀️"
+}, {
+  expected: "⛹️‍♀",
+  actual: "⛹️‍♀"
+}, {
+  expected: "🧑‍🤝‍🧑",
+  actual: "🧑🤝🧑"
+}, {
+  expected: "👨‍👩‍👦",
+  actual: "👨👩👦"
+}, {
+  expected: "👨‍👩‍👧",
+  actual: "👨👩👧"
+}, {
+  expected: "👨‍👨‍👦",
+  actual: "👨👨👦"
+}, {
+  expected: "👨‍👨‍👧",
+  actual: "👨👨👧"
+}, {
+  expected: "👩‍👩‍👦",
+  actual: "👩👩👦"
+}, {
+  expected: "👩‍👩‍👧",
+  actual: "👩👩👧"
+}, {
+  expected: "👨‍👦‍👦",
+  actual: "👨👦👦"
+}, {
+  expected: "👨‍👧‍👦",
+  actual: "👨👧👦"
+}, {
+  expected: "👨‍👧‍👧",
+  actual: "👨👧👧"
+}, {
+  expected: "👩‍👦‍👦",
+  actual: "👩👦👦"
+}, {
+  expected: "👩‍👧‍👦",
+  actual: "👩👧👦"
+}, {
+  expected: "👩‍👧‍👧",
+  actual: "👩👧👧"
+}, {
+  expected: "🧑‍🧑‍🧒",
+  actual: "🧑🧑🧒"
+}, {
+  expected: "🧑‍🧒‍🧒",
+  actual: "🧑🧒🧒"
+}, {
+  expected: "😶‍🌫",
+  actual: "😶‍🌫"
+}, {
+  expected: "😮‍💨",
+  actual: "😮‍💨"
+}, {
+  expected: "😵‍💫",
+  actual: "😵‍💫"
+}, {
+  expected: "👁‍🗨",
+  actual: "👁‍🗨"
+}, {
+  expected: "🧔🏻‍♂️",
+  actual: "🧔🏻♂"
+}, {
+  expected: "🧔🏼‍♂️",
+  actual: "🧔🏼♂"
+}, {
+  expected: "🧔🏽‍♂️",
+  actual: "🧔🏽♂"
+}, {
+  expected: "🧔🏾‍♂️",
+  actual: "🧔🏾♂"
+}, {
+  expected: "🧔🏿‍♂️",
+  actual: "🧔🏿♂"
+}, {
+  expected: "🧔🏻‍♀️",
+  actual: "🧔🏻♀"
+}, {
+  expected: "🧔🏼‍♀️",
+  actual: "🧔🏼♀"
+}, {
+  expected: "🧔🏽‍♀️",
+  actual: "🧔🏽♀"
+}, {
+  expected: "🧔🏾‍♀️",
+  actual: "🧔🏾♀"
+}, {
+  expected: "🧔🏿‍♀️",
+  actual: "🧔🏿♀"
+}, {
+  expected: "👨‍🦰",
+  actual: "👨‍🦰"
+}, {
+  expected: "👨‍🦱",
+  actual: "👨‍🦱"
+}, {
+  expected: "👨‍🦳",
+  actual: "👨‍🦳"
+}, {
+  expected: "👨‍🦲",
+  actual: "👨‍🦲"
+}, {
+  expected: "👩‍🦰",
+  actual: "👩‍🦰"
+}, {
+  expected: "🧑‍🦰",
+  actual: "🧑‍🦰"
+}, {
+  expected: "👩‍🦱",
+  actual: "👩‍🦱"
+}, {
+  expected: "🧑‍🦱",
+  actual: "🧑‍🦱"
+}, {
+  expected: "👩‍🦳",
+  actual: "👩‍🦳"
+}, {
+  expected: "🧑‍🦳",
+  actual: "🧑‍🦳"
+}, {
+  expected: "👩‍🦲",
+  actual: "👩‍🦲"
+}, {
+  expected: "🧑‍🦲",
+  actual: "🧑‍🦲"
+}, {
+  expected: "👱🏻‍♀️",
+  actual: "👱🏻♀"
+}, {
+  expected: "👱🏼‍♀️",
+  actual: "👱🏼♀"
+}, {
+  expected: "👱🏽‍♀️",
+  actual: "👱🏽♀"
+}, {
+  expected: "👱🏾‍♀️",
+  actual: "👱🏾♀"
+}, {
+  expected: "👱🏿‍♀️",
+  actual: "👱🏿♀"
+}, {
+  expected: "👱🏻‍♂️",
+  actual: "👱🏻♂"
+}, {
+  expected: "👱🏼‍♂️",
+  actual: "👱🏼♂"
+}, {
+  expected: "👱🏽‍♂️",
+  actual: "👱🏽♂"
+}, {
+  expected: "👱🏾‍♂️",
+  actual: "👱🏾♂"
+}, {
+  expected: "👱🏿‍♂️",
+  actual: "👱🏿♂"
+}, {
+  expected: "🙍🏻‍♂️",
+  actual: "🙍🏻♂"
+}, {
+  expected: "🙍🏼‍♂️",
+  actual: "🙍🏼♂"
+}, {
+  expected: "🙍🏽‍♂️",
+  actual: "🙍🏽♂"
+}, {
+  expected: "🙍🏾‍♂️",
+  actual: "🙍🏾♂"
+}, {
+  expected: "🙍🏿‍♂️",
+  actual: "🙍🏿♂"
+}, {
+  expected: "🙍🏻‍♀️",
+  actual: "🙍🏻♀"
+}, {
+  expected: "🙍🏼‍♀️",
+  actual: "🙍🏼♀"
+}, {
+  expected: "🙍🏽‍♀️",
+  actual: "🙍🏽♀"
+}, {
+  expected: "🙍🏾‍♀️",
+  actual: "🙍🏾♀"
+}, {
+  expected: "🙍🏿‍♀️",
+  actual: "🙍🏿♀"
+}, {
+  expected: "🙎🏻‍♂️",
+  actual: "🙎🏻♂"
+}, {
+  expected: "🙎🏼‍♂️",
+  actual: "🙎🏼♂"
+}, {
+  expected: "🙎🏽‍♂️",
+  actual: "🙎🏽♂"
+}, {
+  expected: "🙎🏾‍♂️",
+  actual: "🙎🏾♂"
+}, {
+  expected: "🙎🏿‍♂️",
+  actual: "🙎🏿♂"
+}, {
+  expected: "🙎🏻‍♀️",
+  actual: "🙎🏻♀"
+}, {
+  expected: "🙎🏼‍♀️",
+  actual: "🙎🏼♀"
+}, {
+  expected: "🙎🏽‍♀️",
+  actual: "🙎🏽♀"
+}, {
+  expected: "🙎🏾‍♀️",
+  actual: "🙎🏾♀"
+}, {
+  expected: "🙎🏿‍♀️",
+  actual: "🙎🏿♀"
+}, {
+  expected: "🙅🏻‍♂️",
+  actual: "🙅🏻♂"
+}, {
+  expected: "🙅🏼‍♂️",
+  actual: "🙅🏼♂"
+}, {
+  expected: "🙅🏽‍♂️",
+  actual: "🙅🏽♂"
+}, {
+  expected: "🙅🏾‍♂️",
+  actual: "🙅🏾♂"
+}, {
+  expected: "🙅🏿‍♂️",
+  actual: "🙅🏿♂"
+}, {
+  expected: "🙅🏻‍♀️",
+  actual: "🙅🏻♀"
+}, {
+  expected: "🙅🏼‍♀️",
+  actual: "🙅🏼♀"
+}, {
+  expected: "🙅🏽‍♀️",
+  actual: "🙅🏽♀"
+}, {
+  expected: "🙅🏾‍♀️",
+  actual: "🙅🏾♀"
+}, {
+  expected: "🙅🏿‍♀️",
+  actual: "🙅🏿♀"
+}, {
+  expected: "🙆🏻‍♂️",
+  actual: "🙆🏻♂"
+}, {
+  expected: "🙆🏼‍♂️",
+  actual: "🙆🏼♂"
+}, {
+  expected: "🙆🏽‍♂️",
+  actual: "🙆🏽♂"
+}, {
+  expected: "🙆🏾‍♂️",
+  actual: "🙆🏾♂"
+}, {
+  expected: "🙆🏿‍♂️",
+  actual: "🙆🏿♂"
+}, {
+  expected: "🙆🏻‍♀️",
+  actual: "🙆🏻♀"
+}, {
+  expected: "🙆🏼‍♀️",
+  actual: "🙆🏼♀"
+}, {
+  expected: "🙆🏽‍♀️",
+  actual: "🙆🏽♀"
+}, {
+  expected: "🙆🏾‍♀️",
+  actual: "🙆🏾♀"
+}, {
+  expected: "🙆🏿‍♀️",
+  actual: "🙆🏿♀"
+}, {
+  expected: "💁🏻‍♂️",
+  actual: "💁🏻♂"
+}, {
+  expected: "💁🏼‍♂️",
+  actual: "💁🏼♂"
+}, {
+  expected: "💁🏽‍♂️",
+  actual: "💁🏽♂"
+}, {
+  expected: "💁🏾‍♂️",
+  actual: "💁🏾♂"
+}, {
+  expected: "💁🏿‍♂️",
+  actual: "💁🏿♂"
+}, {
+  expected: "💁🏻‍♀️",
+  actual: "💁🏻♀"
+}, {
+  expected: "💁🏼‍♀️",
+  actual: "💁🏼♀"
+}, {
+  expected: "💁🏽‍♀️",
+  actual: "💁🏽♀"
+}, {
+  expected: "💁🏾‍♀️",
+  actual: "💁🏾♀"
+}, {
+  expected: "💁🏿‍♀️",
+  actual: "💁🏿♀"
+}, {
+  expected: "🙋🏻‍♂️",
+  actual: "🙋🏻♂"
+}, {
+  expected: "🙋🏼‍♂️",
+  actual: "🙋🏼♂"
+}, {
+  expected: "🙋🏽‍♂️",
+  actual: "🙋🏽♂"
+}, {
+  expected: "🙋🏾‍♂️",
+  actual: "🙋🏾♂"
+}, {
+  expected: "🙋🏿‍♂️",
+  actual: "🙋🏿♂"
+}, {
+  expected: "🙋🏻‍♀️",
+  actual: "🙋🏻♀"
+}, {
+  expected: "🙋🏼‍♀️",
+  actual: "🙋🏼♀"
+}, {
+  expected: "🙋🏽‍♀️",
+  actual: "🙋🏽♀"
+}, {
+  expected: "🙋🏾‍♀️",
+  actual: "🙋🏾♀"
+}, {
+  expected: "🙋🏿‍♀️",
+  actual: "🙋🏿♀"
+}, {
+  expected: "🧏🏻‍♂️",
+  actual: "🧏🏻♂"
+}, {
+  expected: "🧏🏼‍♂️",
+  actual: "🧏🏼♂"
+}, {
+  expected: "🧏🏽‍♂️",
+  actual: "🧏🏽♂"
+}, {
+  expected: "🧏🏾‍♂️",
+  actual: "🧏🏾♂"
+}, {
+  expected: "🧏🏿‍♂️",
+  actual: "🧏🏿♂"
+}, {
+  expected: "🧏🏻‍♀️",
+  actual: "🧏🏻♀"
+}, {
+  expected: "🧏🏼‍♀️",
+  actual: "🧏🏼♀"
+}, {
+  expected: "🧏🏽‍♀️",
+  actual: "🧏🏽♀"
+}, {
+  expected: "🧏🏾‍♀️",
+  actual: "🧏🏾♀"
+}, {
+  expected: "🧏🏿‍♀️",
+  actual: "🧏🏿♀"
+}, {
+  expected: "🙇🏻‍♂️",
+  actual: "🙇🏻♂"
+}, {
+  expected: "🙇🏼‍♂️",
+  actual: "🙇🏼♂"
+}, {
+  expected: "🙇🏽‍♂️",
+  actual: "🙇🏽♂"
+}, {
+  expected: "🙇🏾‍♂️",
+  actual: "🙇🏾♂"
+}, {
+  expected: "🙇🏿‍♂️",
+  actual: "🙇🏿♂"
+}, {
+  expected: "🙇🏻‍♀️",
+  actual: "🙇🏻♀"
+}, {
+  expected: "🙇🏼‍♀️",
+  actual: "🙇🏼♀"
+}, {
+  expected: "🙇🏽‍♀️",
+  actual: "🙇🏽♀"
+}, {
+  expected: "🙇🏾‍♀️",
+  actual: "🙇🏾♀"
+}, {
+  expected: "🙇🏿‍♀️",
+  actual: "🙇🏿♀"
+}, {
+  expected: "🤦🏻‍♂️",
+  actual: "🤦🏻♂"
+}, {
+  expected: "🤦🏼‍♂️",
+  actual: "🤦🏼♂"
+}, {
+  expected: "🤦🏽‍♂️",
+  actual: "🤦🏽♂"
+}, {
+  expected: "🤦🏾‍♂️",
+  actual: "🤦🏾♂"
+}, {
+  expected: "🤦🏿‍♂️",
+  actual: "🤦🏿♂"
+}, {
+  expected: "🤦🏻‍♀️",
+  actual: "🤦🏻♀"
+}, {
+  expected: "🤦🏼‍♀️",
+  actual: "🤦🏼♀"
+}, {
+  expected: "🤦🏽‍♀️",
+  actual: "🤦🏽♀"
+}, {
+  expected: "🤦🏾‍♀️",
+  actual: "🤦🏾♀"
+}, {
+  expected: "🤦🏿‍♀️",
+  actual: "🤦🏿♀"
+}, {
+  expected: "🤷🏻‍♂️",
+  actual: "🤷🏻♂"
+}, {
+  expected: "🤷🏼‍♂️",
+  actual: "🤷🏼♂"
+}, {
+  expected: "🤷🏽‍♂️",
+  actual: "🤷🏽♂"
+}, {
+  expected: "🤷🏾‍♂️",
+  actual: "🤷🏾♂"
+}, {
+  expected: "🤷🏿‍♂️",
+  actual: "🤷🏿♂"
+}, {
+  expected: "🤷🏻‍♀️",
+  actual: "🤷🏻♀"
+}, {
+  expected: "🤷🏼‍♀️",
+  actual: "🤷🏼♀"
+}, {
+  expected: "🤷🏽‍♀️",
+  actual: "🤷🏽♀"
+}, {
+  expected: "🤷🏾‍♀️",
+  actual: "🤷🏾♀"
+}, {
+  expected: "🤷🏿‍♀️",
+  actual: "🤷🏿♀"
+}, {
+  expected: "🧑🏻‍⚕️",
+  actual: "🧑🏻⚕"
+}, {
+  expected: "🧑🏼‍⚕️",
+  actual: "🧑🏼⚕"
+}, {
+  expected: "🧑🏽‍⚕️",
+  actual: "🧑🏽⚕"
+}, {
+  expected: "🧑🏾‍⚕️",
+  actual: "🧑🏾⚕"
+}, {
+  expected: "🧑🏿‍⚕️",
+  actual: "🧑🏿⚕"
+}, {
+  expected: "👨🏻‍⚕️",
+  actual: "👨🏻⚕"
+}, {
+  expected: "👨🏼‍⚕️",
+  actual: "👨🏼⚕"
+}, {
+  expected: "👨🏽‍⚕️",
+  actual: "👨🏽⚕"
+}, {
+  expected: "👨🏾‍⚕️",
+  actual: "👨🏾⚕"
+}, {
+  expected: "👨🏿‍⚕️",
+  actual: "👨🏿⚕"
+}, {
+  expected: "👩🏻‍⚕️",
+  actual: "👩🏻⚕"
+}, {
+  expected: "👩🏼‍⚕️",
+  actual: "👩🏼⚕"
+}, {
+  expected: "👩🏽‍⚕️",
+  actual: "👩🏽⚕"
+}, {
+  expected: "👩🏾‍⚕️",
+  actual: "👩🏾⚕"
+}, {
+  expected: "👩🏿‍⚕️",
+  actual: "👩🏿⚕"
+}, {
+  expected: "🧑‍🎓",
+  actual: "🧑‍🎓"
+}, {
+  expected: "👨‍🎓",
+  actual: "👨‍🎓"
+}, {
+  expected: "👩‍🎓",
+  actual: "👩‍🎓"
+}, {
+  expected: "🧑‍🏫",
+  actual: "🧑‍🏫"
+}, {
+  expected: "👨‍🏫",
+  actual: "👨‍🏫"
+}, {
+  expected: "👩‍🏫",
+  actual: "👩‍🏫"
+}, {
+  expected: "🧑🏻‍⚖️",
+  actual: "🧑🏻⚖"
+}, {
+  expected: "🧑🏼‍⚖️",
+  actual: "🧑🏼⚖"
+}, {
+  expected: "🧑🏽‍⚖️",
+  actual: "🧑🏽⚖"
+}, {
+  expected: "🧑🏾‍⚖️",
+  actual: "🧑🏾⚖"
+}, {
+  expected: "🧑🏿‍⚖️",
+  actual: "🧑🏿⚖"
+}, {
+  expected: "👨🏻‍⚖️",
+  actual: "👨🏻⚖"
+}, {
+  expected: "👨🏼‍⚖️",
+  actual: "👨🏼⚖"
+}, {
+  expected: "👨🏽‍⚖️",
+  actual: "👨🏽⚖"
+}, {
+  expected: "👨🏾‍⚖️",
+  actual: "👨🏾⚖"
+}, {
+  expected: "👨🏿‍⚖️",
+  actual: "👨🏿⚖"
+}, {
+  expected: "👩🏻‍⚖️",
+  actual: "👩🏻⚖"
+}, {
+  expected: "👩🏼‍⚖️",
+  actual: "👩🏼⚖"
+}, {
+  expected: "👩🏽‍⚖️",
+  actual: "👩🏽⚖"
+}, {
+  expected: "👩🏾‍⚖️",
+  actual: "👩🏾⚖"
+}, {
+  expected: "👩🏿‍⚖️",
+  actual: "👩🏿⚖"
+}, {
+  expected: "🧑‍🌾",
+  actual: "🧑‍🌾"
+}, {
+  expected: "👨‍🌾",
+  actual: "👨‍🌾"
+}, {
+  expected: "👩‍🌾",
+  actual: "👩‍🌾"
+}, {
+  expected: "🧑‍🍳",
+  actual: "🧑‍🍳"
+}, {
+  expected: "👨‍🍳",
+  actual: "👨‍🍳"
+}, {
+  expected: "👩‍🍳",
+  actual: "👩‍🍳"
+}, {
+  expected: "🧑‍🔧",
+  actual: "🧑‍🔧"
+}, {
+  expected: "👨‍🔧",
+  actual: "👨‍🔧"
+}, {
+  expected: "👩‍🔧",
+  actual: "👩‍🔧"
+}, {
+  expected: "🧑‍🏭",
+  actual: "🧑‍🏭"
+}, {
+  expected: "👨‍🏭",
+  actual: "👨‍🏭"
+}, {
+  expected: "👩‍🏭",
+  actual: "👩‍🏭"
+}, {
+  expected: "🧑‍💼",
+  actual: "🧑‍💼"
+}, {
+  expected: "👨‍💼",
+  actual: "👨‍💼"
+}, {
+  expected: "👩‍💼",
+  actual: "👩‍💼"
+}, {
+  expected: "🧑‍🔬",
+  actual: "🧑‍🔬"
+}, {
+  expected: "👨‍🔬",
+  actual: "👨‍🔬"
+}, {
+  expected: "👩‍🔬",
+  actual: "👩‍🔬"
+}, {
+  expected: "🧑‍💻",
+  actual: "🧑‍💻"
+}, {
+  expected: "👨‍💻",
+  actual: "👨‍💻"
+}, {
+  expected: "👩‍💻",
+  actual: "👩‍💻"
+}, {
+  expected: "🧑‍🎤",
+  actual: "🧑‍🎤"
+}, {
+  expected: "👨‍🎤",
+  actual: "👨‍🎤"
+}, {
+  expected: "👩‍🎤",
+  actual: "👩‍🎤"
+}, {
+  expected: "🧑‍🎨",
+  actual: "🧑‍🎨"
+}, {
+  expected: "👨‍🎨",
+  actual: "👨‍🎨"
+}, {
+  expected: "👩‍🎨",
+  actual: "👩‍🎨"
+}, {
+  expected: "🧑🏻‍✈️",
+  actual: "🧑🏻✈"
+}, {
+  expected: "🧑🏼‍✈️",
+  actual: "🧑🏼✈"
+}, {
+  expected: "🧑🏽‍✈️",
+  actual: "🧑🏽✈"
+}, {
+  expected: "🧑🏾‍✈️",
+  actual: "🧑🏾✈"
+}, {
+  expected: "🧑🏿‍✈️",
+  actual: "🧑🏿✈"
+}, {
+  expected: "👨🏻‍✈️",
+  actual: "👨🏻✈"
+}, {
+  expected: "👨🏼‍✈️",
+  actual: "👨🏼✈"
+}, {
+  expected: "👨🏽‍✈️",
+  actual: "👨🏽✈"
+}, {
+  expected: "👨🏾‍✈️",
+  actual: "👨🏾✈"
+}, {
+  expected: "👨🏿‍✈️",
+  actual: "👨🏿✈"
+}, {
+  expected: "👩🏻‍✈️",
+  actual: "👩🏻✈"
+}, {
+  expected: "👩🏼‍✈️",
+  actual: "👩🏼✈"
+}, {
+  expected: "👩🏽‍✈️",
+  actual: "👩🏽✈"
+}, {
+  expected: "👩🏾‍✈️",
+  actual: "👩🏾✈"
+}, {
+  expected: "👩🏿‍✈️",
+  actual: "👩🏿✈"
+}, {
+  expected: "🧑‍🚀",
+  actual: "🧑‍🚀"
+}, {
+  expected: "👨‍🚀",
+  actual: "👨‍🚀"
+}, {
+  expected: "👩‍🚀",
+  actual: "👩‍🚀"
+}, {
+  expected: "🧑‍🚒",
+  actual: "🧑‍🚒"
+}, {
+  expected: "👨‍🚒",
+  actual: "👨‍🚒"
+}, {
+  expected: "👩‍🚒",
+  actual: "👩‍🚒"
+}, {
+  expected: "👮🏻‍♂️",
+  actual: "👮🏻♂"
+}, {
+  expected: "👮🏼‍♂️",
+  actual: "👮🏼♂"
+}, {
+  expected: "👮🏽‍♂️",
+  actual: "👮🏽♂"
+}, {
+  expected: "👮🏾‍♂️",
+  actual: "👮🏾♂"
+}, {
+  expected: "👮🏿‍♂️",
+  actual: "👮🏿♂"
+}, {
+  expected: "👮🏻‍♀️",
+  actual: "👮🏻♀"
+}, {
+  expected: "👮🏼‍♀️",
+  actual: "👮🏼♀"
+}, {
+  expected: "👮🏽‍♀️",
+  actual: "👮🏽♀"
+}, {
+  expected: "👮🏾‍♀️",
+  actual: "👮🏾♀"
+}, {
+  expected: "👮🏿‍♀️",
+  actual: "👮🏿♀"
+}, {
+  expected: "🕵🏻‍♂️",
+  actual: "🕵🏻♂"
+}, {
+  expected: "🕵🏼‍♂️",
+  actual: "🕵🏼♂"
+}, {
+  expected: "🕵🏽‍♂️",
+  actual: "🕵🏽♂"
+}, {
+  expected: "🕵🏾‍♂️",
+  actual: "🕵🏾♂"
+}, {
+  expected: "🕵🏿‍♂️",
+  actual: "🕵🏿♂"
+}, {
+  expected: "🕵🏻‍♀️",
+  actual: "🕵🏻♀"
+}, {
+  expected: "🕵🏼‍♀️",
+  actual: "🕵🏼♀"
+}, {
+  expected: "🕵🏽‍♀️",
+  actual: "🕵🏽♀"
+}, {
+  expected: "🕵🏾‍♀️",
+  actual: "🕵🏾♀"
+}, {
+  expected: "🕵🏿‍♀️",
+  actual: "🕵🏿♀"
+}, {
+  expected: "💂🏻‍♂️",
+  actual: "💂🏻♂"
+}, {
+  expected: "💂🏼‍♂️",
+  actual: "💂🏼♂"
+}, {
+  expected: "💂🏽‍♂️",
+  actual: "💂🏽♂"
+}, {
+  expected: "💂🏾‍♂️",
+  actual: "💂🏾♂"
+}, {
+  expected: "💂🏿‍♂️",
+  actual: "💂🏿♂"
+}, {
+  expected: "💂🏻‍♀️",
+  actual: "💂🏻♀"
+}, {
+  expected: "💂🏼‍♀️",
+  actual: "💂🏼♀"
+}, {
+  expected: "💂🏽‍♀️",
+  actual: "💂🏽♀"
+}, {
+  expected: "💂🏾‍♀️",
+  actual: "💂🏾♀"
+}, {
+  expected: "💂🏿‍♀️",
+  actual: "💂🏿♀"
+}, {
+  expected: "👷🏻‍♂️",
+  actual: "👷🏻♂"
+}, {
+  expected: "👷🏼‍♂️",
+  actual: "👷🏼♂"
+}, {
+  expected: "👷🏽‍♂️",
+  actual: "👷🏽♂"
+}, {
+  expected: "👷🏾‍♂️",
+  actual: "👷🏾♂"
+}, {
+  expected: "👷🏿‍♂️",
+  actual: "👷🏿♂"
+}, {
+  expected: "👷🏻‍♀️",
+  actual: "👷🏻♀"
+}, {
+  expected: "👷🏼‍♀️",
+  actual: "👷🏼♀"
+}, {
+  expected: "👷🏽‍♀️",
+  actual: "👷🏽♀"
+}, {
+  expected: "👷🏾‍♀️",
+  actual: "👷🏾♀"
+}, {
+  expected: "👷🏿‍♀️",
+  actual: "👷🏿♀"
+}, {
+  expected: "👳🏻‍♂️",
+  actual: "👳🏻♂"
+}, {
+  expected: "👳🏼‍♂️",
+  actual: "👳🏼♂"
+}, {
+  expected: "👳🏽‍♂️",
+  actual: "👳🏽♂"
+}, {
+  expected: "👳🏾‍♂️",
+  actual: "👳🏾♂"
+}, {
+  expected: "👳🏿‍♂️",
+  actual: "👳🏿♂"
+}, {
+  expected: "👳🏻‍♀️",
+  actual: "👳🏻♀"
+}, {
+  expected: "👳🏼‍♀️",
+  actual: "👳🏼♀"
+}, {
+  expected: "👳🏽‍♀️",
+  actual: "👳🏽♀"
+}, {
+  expected: "👳🏾‍♀️",
+  actual: "👳🏾♀"
+}, {
+  expected: "👳🏿‍♀️",
+  actual: "👳🏿♀"
+}, {
+  expected: "🤵🏻‍♂️",
+  actual: "🤵🏻♂"
+}, {
+  expected: "🤵🏼‍♂️",
+  actual: "🤵🏼♂"
+}, {
+  expected: "🤵🏽‍♂️",
+  actual: "🤵🏽♂"
+}, {
+  expected: "🤵🏾‍♂️",
+  actual: "🤵🏾♂"
+}, {
+  expected: "🤵🏿‍♂️",
+  actual: "🤵🏿♂"
+}, {
+  expected: "🤵🏻‍♀️",
+  actual: "🤵🏻♀"
+}, {
+  expected: "🤵🏼‍♀️",
+  actual: "🤵🏼♀"
+}, {
+  expected: "🤵🏽‍♀️",
+  actual: "🤵🏽♀"
+}, {
+  expected: "🤵🏾‍♀️",
+  actual: "🤵🏾♀"
+}, {
+  expected: "🤵🏿‍♀️",
+  actual: "🤵🏿♀"
+}, {
+  expected: "👰🏻‍♂️",
+  actual: "👰🏻♂"
+}, {
+  expected: "👰🏼‍♂️",
+  actual: "👰🏼♂"
+}, {
+  expected: "👰🏽‍♂️",
+  actual: "👰🏽♂"
+}, {
+  expected: "👰🏾‍♂️",
+  actual: "👰🏾♂"
+}, {
+  expected: "👰🏿‍♂️",
+  actual: "👰🏿♂"
+}, {
+  expected: "👰🏻‍♀️",
+  actual: "👰🏻♀"
+}, {
+  expected: "👰🏼‍♀️",
+  actual: "👰🏼♀"
+}, {
+  expected: "👰🏽‍♀️",
+  actual: "👰🏽♀"
+}, {
+  expected: "👰🏾‍♀️",
+  actual: "👰🏾♀"
+}, {
+  expected: "👰🏿‍♀️",
+  actual: "👰🏿♀"
+}, {
+  expected: "👩‍🍼",
+  actual: "👩‍🍼"
+}, {
+  expected: "👨‍🍼",
+  actual: "👨‍🍼"
+}, {
+  expected: "🧑‍🍼",
+  actual: "🧑‍🍼"
+}, {
+  expected: "🧑‍🎄",
+  actual: "🧑‍🎄"
+}, {
+  expected: "🦸🏻‍♂️",
+  actual: "🦸🏻♂"
+}, {
+  expected: "🦸🏼‍♂️",
+  actual: "🦸🏼♂"
+}, {
+  expected: "🦸🏽‍♂️",
+  actual: "🦸🏽♂"
+}, {
+  expected: "🦸🏾‍♂️",
+  actual: "🦸🏾♂"
+}, {
+  expected: "🦸🏿‍♂️",
+  actual: "🦸🏿♂"
+}, {
+  expected: "🦸🏻‍♀️",
+  actual: "🦸🏻♀"
+}, {
+  expected: "🦸🏼‍♀️",
+  actual: "🦸🏼♀"
+}, {
+  expected: "🦸🏽‍♀️",
+  actual: "🦸🏽♀"
+}, {
+  expected: "🦸🏾‍♀️",
+  actual: "🦸🏾♀"
+}, {
+  expected: "🦸🏿‍♀️",
+  actual: "🦸🏿♀"
+}, {
+  expected: "🦹🏻‍♂️",
+  actual: "🦹🏻♂"
+}, {
+  expected: "🦹🏼‍♂️",
+  actual: "🦹🏼♂"
+}, {
+  expected: "🦹🏽‍♂️",
+  actual: "🦹🏽♂"
+}, {
+  expected: "🦹🏾‍♂️",
+  actual: "🦹🏾♂"
+}, {
+  expected: "🦹🏿‍♂️",
+  actual: "🦹🏿♂"
+}, {
+  expected: "🦹🏻‍♀️",
+  actual: "🦹🏻♀"
+}, {
+  expected: "🦹🏼‍♀️",
+  actual: "🦹🏼♀"
+}, {
+  expected: "🦹🏽‍♀️",
+  actual: "🦹🏽♀"
+}, {
+  expected: "🦹🏾‍♀️",
+  actual: "🦹🏾♀"
+}, {
+  expected: "🦹🏿‍♀️",
+  actual: "🦹🏿♀"
+}, {
+  expected: "🧙🏻‍♂️",
+  actual: "🧙🏻♂"
+}, {
+  expected: "🧙🏼‍♂️",
+  actual: "🧙🏼♂"
+}, {
+  expected: "🧙🏽‍♂️",
+  actual: "🧙🏽♂"
+}, {
+  expected: "🧙🏾‍♂️",
+  actual: "🧙🏾♂"
+}, {
+  expected: "🧙🏿‍♂️",
+  actual: "🧙🏿♂"
+}, {
+  expected: "🧙🏻‍♀️",
+  actual: "🧙🏻♀"
+}, {
+  expected: "🧙🏼‍♀️",
+  actual: "🧙🏼♀"
+}, {
+  expected: "🧙🏽‍♀️",
+  actual: "🧙🏽♀"
+}, {
+  expected: "🧙🏾‍♀️",
+  actual: "🧙🏾♀"
+}, {
+  expected: "🧙🏿‍♀️",
+  actual: "🧙🏿♀"
+}, {
+  expected: "🧚🏻‍♂️",
+  actual: "🧚🏻♂"
+}, {
+  expected: "🧚🏼‍♂️",
+  actual: "🧚🏼♂"
+}, {
+  expected: "🧚🏽‍♂️",
+  actual: "🧚🏽♂"
+}, {
+  expected: "🧚🏾‍♂️",
+  actual: "🧚🏾♂"
+}, {
+  expected: "🧚🏿‍♂️",
+  actual: "🧚🏿♂"
+}, {
+  expected: "🧚🏻‍♀️",
+  actual: "🧚🏻♀"
+}, {
+  expected: "🧚🏼‍♀️",
+  actual: "🧚🏼♀"
+}, {
+  expected: "🧚🏽‍♀️",
+  actual: "🧚🏽♀"
+}, {
+  expected: "🧚🏾‍♀️",
+  actual: "🧚🏾♀"
+}, {
+  expected: "🧚🏿‍♀️",
+  actual: "🧚🏿♀"
+}, {
+  expected: "🧛🏻‍♂️",
+  actual: "🧛🏻♂"
+}, {
+  expected: "🧛🏼‍♂️",
+  actual: "🧛🏼♂"
+}, {
+  expected: "🧛🏽‍♂️",
+  actual: "🧛🏽♂"
+}, {
+  expected: "🧛🏾‍♂️",
+  actual: "🧛🏾♂"
+}, {
+  expected: "🧛🏿‍♂️",
+  actual: "🧛🏿♂"
+}, {
+  expected: "🧛🏻‍♀️",
+  actual: "🧛🏻♀"
+}, {
+  expected: "🧛🏼‍♀️",
+  actual: "🧛🏼♀"
+}, {
+  expected: "🧛🏽‍♀️",
+  actual: "🧛🏽♀"
+}, {
+  expected: "🧛🏾‍♀️",
+  actual: "🧛🏾♀"
+}, {
+  expected: "🧛🏿‍♀️",
+  actual: "🧛🏿♀"
+}, {
+  expected: "🧜🏻‍♂️",
+  actual: "🧜🏻♂"
+}, {
+  expected: "🧜🏼‍♂️",
+  actual: "🧜🏼♂"
+}, {
+  expected: "🧜🏽‍♂️",
+  actual: "🧜🏽♂"
+}, {
+  expected: "🧜🏾‍♂️",
+  actual: "🧜🏾♂"
+}, {
+  expected: "🧜🏿‍♂️",
+  actual: "🧜🏿♂"
+}, {
+  expected: "🧜🏻‍♀️",
+  actual: "🧜🏻♀"
+}, {
+  expected: "🧜🏼‍♀️",
+  actual: "🧜🏼♀"
+}, {
+  expected: "🧜🏽‍♀️",
+  actual: "🧜🏽♀"
+}, {
+  expected: "🧜🏾‍♀️",
+  actual: "🧜🏾♀"
+}, {
+  expected: "🧜🏿‍♀️",
+  actual: "🧜🏿♀"
+}, {
+  expected: "🧝🏻‍♂️",
+  actual: "🧝🏻♂"
+}, {
+  expected: "🧝🏼‍♂️",
+  actual: "🧝🏼♂"
+}, {
+  expected: "🧝🏽‍♂️",
+  actual: "🧝🏽♂"
+}, {
+  expected: "🧝🏾‍♂️",
+  actual: "🧝🏾♂"
+}, {
+  expected: "🧝🏿‍♂️",
+  actual: "🧝🏿♂"
+}, {
+  expected: "🧝🏻‍♀️",
+  actual: "🧝🏻♀"
+}, {
+  expected: "🧝🏼‍♀️",
+  actual: "🧝🏼♀"
+}, {
+  expected: "🧝🏽‍♀️",
+  actual: "🧝🏽♀"
+}, {
+  expected: "🧝🏾‍♀️",
+  actual: "🧝🏾♀"
+}, {
+  expected: "🧝🏿‍♀️",
+  actual: "🧝🏿♀"
+}, {
+  expected: "💆🏻‍♂️",
+  actual: "💆🏻♂"
+}, {
+  expected: "💆🏼‍♂️",
+  actual: "💆🏼♂"
+}, {
+  expected: "💆🏽‍♂️",
+  actual: "💆🏽♂"
+}, {
+  expected: "💆🏾‍♂️",
+  actual: "💆🏾♂"
+}, {
+  expected: "💆🏿‍♂️",
+  actual: "💆🏿♂"
+}, {
+  expected: "💆🏻‍♀️",
+  actual: "💆🏻♀"
+}, {
+  expected: "💆🏼‍♀️",
+  actual: "💆🏼♀"
+}, {
+  expected: "💆🏽‍♀️",
+  actual: "💆🏽♀"
+}, {
+  expected: "💆🏾‍♀️",
+  actual: "💆🏾♀"
+}, {
+  expected: "💆🏿‍♀️",
+  actual: "💆🏿♀"
+}, {
+  expected: "💇🏻‍♂️",
+  actual: "💇🏻♂"
+}, {
+  expected: "💇🏼‍♂️",
+  actual: "💇🏼♂"
+}, {
+  expected: "💇🏽‍♂️",
+  actual: "💇🏽♂"
+}, {
+  expected: "💇🏾‍♂️",
+  actual: "💇🏾♂"
+}, {
+  expected: "💇🏿‍♂️",
+  actual: "💇🏿♂"
+}, {
+  expected: "💇🏻‍♀️",
+  actual: "💇🏻♀"
+}, {
+  expected: "💇🏼‍♀️",
+  actual: "💇🏼♀"
+}, {
+  expected: "💇🏽‍♀️",
+  actual: "💇🏽♀"
+}, {
+  expected: "💇🏾‍♀️",
+  actual: "💇🏾♀"
+}, {
+  expected: "💇🏿‍♀️",
+  actual: "💇🏿♀"
+}, {
+  expected: "🚶🏻‍♂️",
+  actual: "🚶🏻♂"
+}, {
+  expected: "🚶🏼‍♂️",
+  actual: "🚶🏼♂"
+}, {
+  expected: "🚶🏽‍♂️",
+  actual: "🚶🏽♂"
+}, {
+  expected: "🚶🏾‍♂️",
+  actual: "🚶🏾♂"
+}, {
+  expected: "🚶🏿‍♂️",
+  actual: "🚶🏿♂"
+}, {
+  expected: "🚶🏻‍♀️",
+  actual: "🚶🏻♀"
+}, {
+  expected: "🚶🏼‍♀️",
+  actual: "🚶🏼♀"
+}, {
+  expected: "🚶🏽‍♀️",
+  actual: "🚶🏽♀"
+}, {
+  expected: "🚶🏾‍♀️",
+  actual: "🚶🏾♀"
+}, {
+  expected: "🚶🏿‍♀️",
+  actual: "🚶🏿♀"
+}, {
+  expected: "🧍🏻‍♂️",
+  actual: "🧍🏻♂"
+}, {
+  expected: "🧍🏼‍♂️",
+  actual: "🧍🏼♂"
+}, {
+  expected: "🧍🏽‍♂️",
+  actual: "🧍🏽♂"
+}, {
+  expected: "🧍🏾‍♂️",
+  actual: "🧍🏾♂"
+}, {
+  expected: "🧍🏿‍♂️",
+  actual: "🧍🏿♂"
+}, {
+  expected: "🧍🏻‍♀️",
+  actual: "🧍🏻♀"
+}, {
+  expected: "🧍🏼‍♀️",
+  actual: "🧍🏼♀"
+}, {
+  expected: "🧍🏽‍♀️",
+  actual: "🧍🏽♀"
+}, {
+  expected: "🧍🏾‍♀️",
+  actual: "🧍🏾♀"
+}, {
+  expected: "🧍🏿‍♀️",
+  actual: "🧍🏿♀"
+}, {
+  expected: "🧎🏻‍♂️",
+  actual: "🧎🏻♂"
+}, {
+  expected: "🧎🏼‍♂️",
+  actual: "🧎🏼♂"
+}, {
+  expected: "🧎🏽‍♂️",
+  actual: "🧎🏽♂"
+}, {
+  expected: "🧎🏾‍♂️",
+  actual: "🧎🏾♂"
+}, {
+  expected: "🧎🏿‍♂️",
+  actual: "🧎🏿♂"
+}, {
+  expected: "🧎🏻‍♀️",
+  actual: "🧎🏻♀"
+}, {
+  expected: "🧎🏼‍♀️",
+  actual: "🧎🏼♀"
+}, {
+  expected: "🧎🏽‍♀️",
+  actual: "🧎🏽♀"
+}, {
+  expected: "🧎🏾‍♀️",
+  actual: "🧎🏾♀"
+}, {
+  expected: "🧎🏿‍♀️",
+  actual: "🧎🏿♀"
+}, {
+  expected: "🧑‍🦯",
+  actual: "🧑‍🦯"
+}, {
+  expected: "👨‍🦯",
+  actual: "👨‍🦯"
+}, {
+  expected: "👩‍🦯",
+  actual: "👩‍🦯"
+}, {
+  expected: "🧑‍🦼",
+  actual: "🧑‍🦼"
+}, {
+  expected: "👨‍🦼",
+  actual: "👨‍🦼"
+}, {
+  expected: "👩‍🦼",
+  actual: "👩‍🦼"
+}, {
+  expected: "🧑‍🦽",
+  actual: "🧑‍🦽"
+}, {
+  expected: "👨‍🦽",
+  actual: "👨‍🦽"
+}, {
+  expected: "👩‍🦽",
+  actual: "👩‍🦽"
+}, {
+  expected: "🏃🏻‍♂️",
+  actual: "🏃🏻♂"
+}, {
+  expected: "🏃🏼‍♂️",
+  actual: "🏃🏼♂"
+}, {
+  expected: "🏃🏽‍♂️",
+  actual: "🏃🏽♂"
+}, {
+  expected: "🏃🏾‍♂️",
+  actual: "🏃🏾♂"
+}, {
+  expected: "🏃🏿‍♂️",
+  actual: "🏃🏿♂"
+}, {
+  expected: "🏃🏻‍♀️",
+  actual: "🏃🏻♀"
+}, {
+  expected: "🏃🏼‍♀️",
+  actual: "🏃🏼♀"
+}, {
+  expected: "🏃🏽‍♀️",
+  actual: "🏃🏽♀"
+}, {
+  expected: "🏃🏾‍♀️",
+  actual: "🏃🏾♀"
+}, {
+  expected: "🏃🏿‍♀️",
+  actual: "🏃🏿♀"
+}, {
+  expected: "🧖🏻‍♂️",
+  actual: "🧖🏻♂"
+}, {
+  expected: "🧖🏼‍♂️",
+  actual: "🧖🏼♂"
+}, {
+  expected: "🧖🏽‍♂️",
+  actual: "🧖🏽♂"
+}, {
+  expected: "🧖🏾‍♂️",
+  actual: "🧖🏾♂"
+}, {
+  expected: "🧖🏿‍♂️",
+  actual: "🧖🏿♂"
+}, {
+  expected: "🧖🏻‍♀️",
+  actual: "🧖🏻♀"
+}, {
+  expected: "🧖🏼‍♀️",
+  actual: "🧖🏼♀"
+}, {
+  expected: "🧖🏽‍♀️",
+  actual: "🧖🏽♀"
+}, {
+  expected: "🧖🏾‍♀️",
+  actual: "🧖🏾♀"
+}, {
+  expected: "🧖🏿‍♀️",
+  actual: "🧖🏿♀"
+}, {
+  expected: "🧗🏻‍♂️",
+  actual: "🧗🏻♂"
+}, {
+  expected: "🧗🏼‍♂️",
+  actual: "🧗🏼♂"
+}, {
+  expected: "🧗🏽‍♂️",
+  actual: "🧗🏽♂"
+}, {
+  expected: "🧗🏾‍♂️",
+  actual: "🧗🏾♂"
+}, {
+  expected: "🧗🏿‍♂️",
+  actual: "🧗🏿♂"
+}, {
+  expected: "🧗🏻‍♀️",
+  actual: "🧗🏻♀"
+}, {
+  expected: "🧗🏼‍♀️",
+  actual: "🧗🏼♀"
+}, {
+  expected: "🧗🏽‍♀️",
+  actual: "🧗🏽♀"
+}, {
+  expected: "🧗🏾‍♀️",
+  actual: "🧗🏾♀"
+}, {
+  expected: "🧗🏿‍♀️",
+  actual: "🧗🏿♀"
+}, {
+  expected: "🏌🏻‍♂️",
+  actual: "🏌🏻♂"
+}, {
+  expected: "🏌🏼‍♂️",
+  actual: "🏌🏼♂"
+}, {
+  expected: "🏌🏽‍♂️",
+  actual: "🏌🏽♂"
+}, {
+  expected: "🏌🏾‍♂️",
+  actual: "🏌🏾♂"
+}, {
+  expected: "🏌🏿‍♂️",
+  actual: "🏌🏿♂"
+}, {
+  expected: "🏌🏻‍♀️",
+  actual: "🏌🏻♀"
+}, {
+  expected: "🏌🏼‍♀️",
+  actual: "🏌🏼♀"
+}, {
+  expected: "🏌🏽‍♀️",
+  actual: "🏌🏽♀"
+}, {
+  expected: "🏌🏾‍♀️",
+  actual: "🏌🏾♀"
+}, {
+  expected: "🏌🏿‍♀️",
+  actual: "🏌🏿♀"
+}, {
+  expected: "🏄🏻‍♂️",
+  actual: "🏄🏻♂"
+}, {
+  expected: "🏄🏼‍♂️",
+  actual: "🏄🏼♂"
+}, {
+  expected: "🏄🏽‍♂️",
+  actual: "🏄🏽♂"
+}, {
+  expected: "🏄🏾‍♂️",
+  actual: "🏄🏾♂"
+}, {
+  expected: "🏄🏿‍♂️",
+  actual: "🏄🏿♂"
+}, {
+  expected: "🏄🏻‍♀️",
+  actual: "🏄🏻♀"
+}, {
+  expected: "🏄🏼‍♀️",
+  actual: "🏄🏼♀"
+}, {
+  expected: "🏄🏽‍♀️",
+  actual: "🏄🏽♀"
+}, {
+  expected: "🏄🏾‍♀️",
+  actual: "🏄🏾♀"
+}, {
+  expected: "🏄🏿‍♀️",
+  actual: "🏄🏿♀"
+}, {
+  expected: "🚣🏻‍♂️",
+  actual: "🚣🏻♂"
+}, {
+  expected: "🚣🏼‍♂️",
+  actual: "🚣🏼♂"
+}, {
+  expected: "🚣🏽‍♂️",
+  actual: "🚣🏽♂"
+}, {
+  expected: "🚣🏾‍♂️",
+  actual: "🚣🏾♂"
+}, {
+  expected: "🚣🏿‍♂️",
+  actual: "🚣🏿♂"
+}, {
+  expected: "🚣🏻‍♀️",
+  actual: "🚣🏻♀"
+}, {
+  expected: "🚣🏼‍♀️",
+  actual: "🚣🏼♀"
+}, {
+  expected: "🚣🏽‍♀️",
+  actual: "🚣🏽♀"
+}, {
+  expected: "🚣🏾‍♀️",
+  actual: "🚣🏾♀"
+}, {
+  expected: "🚣🏿‍♀️",
+  actual: "🚣🏿♀"
+}, {
+  expected: "🏊🏻‍♂️",
+  actual: "🏊🏻♂"
+}, {
+  expected: "🏊🏼‍♂️",
+  actual: "🏊🏼♂"
+}, {
+  expected: "🏊🏽‍♂️",
+  actual: "🏊🏽♂"
+}, {
+  expected: "🏊🏾‍♂️",
+  actual: "🏊🏾♂"
+}, {
+  expected: "🏊🏿‍♂️",
+  actual: "🏊🏿♂"
+}, {
+  expected: "🏊🏻‍♀️",
+  actual: "🏊🏻♀"
+}, {
+  expected: "🏊🏼‍♀️",
+  actual: "🏊🏼♀"
+}, {
+  expected: "🏊🏽‍♀️",
+  actual: "🏊🏽♀"
+}, {
+  expected: "🏊🏾‍♀️",
+  actual: "🏊🏾♀"
+}, {
+  expected: "🏊🏿‍♀️",
+  actual: "🏊🏿♀"
+}, {
+  expected: "🏋🏻‍♂️",
+  actual: "🏋🏻♂"
+}, {
+  expected: "🏋🏼‍♂️",
+  actual: "🏋🏼♂"
+}, {
+  expected: "🏋🏽‍♂️",
+  actual: "🏋🏽♂"
+}, {
+  expected: "🏋🏾‍♂️",
+  actual: "🏋🏾♂"
+}, {
+  expected: "🏋🏿‍♂️",
+  actual: "🏋🏿♂"
+}, {
+  expected: "🏋🏻‍♀️",
+  actual: "🏋🏻♀"
+}, {
+  expected: "🏋🏼‍♀️",
+  actual: "🏋🏼♀"
+}, {
+  expected: "🏋🏽‍♀️",
+  actual: "🏋🏽♀"
+}, {
+  expected: "🏋🏾‍♀️",
+  actual: "🏋🏾♀"
+}, {
+  expected: "🏋🏿‍♀️",
+  actual: "🏋🏿♀"
+}, {
+  expected: "🚴🏻‍♂️",
+  actual: "🚴🏻♂"
+}, {
+  expected: "🚴🏼‍♂️",
+  actual: "🚴🏼♂"
+}, {
+  expected: "🚴🏽‍♂️",
+  actual: "🚴🏽♂"
+}, {
+  expected: "🚴🏾‍♂️",
+  actual: "🚴🏾♂"
+}, {
+  expected: "🚴🏿‍♂️",
+  actual: "🚴🏿♂"
+}, {
+  expected: "🚴🏻‍♀️",
+  actual: "🚴🏻♀"
+}, {
+  expected: "🚴🏼‍♀️",
+  actual: "🚴🏼♀"
+}, {
+  expected: "🚴🏽‍♀️",
+  actual: "🚴🏽♀"
+}, {
+  expected: "🚴🏾‍♀️",
+  actual: "🚴🏾♀"
+}, {
+  expected: "🚴🏿‍♀️",
+  actual: "🚴🏿♀"
+}, {
+  expected: "🚵🏻‍♂️",
+  actual: "🚵🏻♂"
+}, {
+  expected: "🚵🏼‍♂️",
+  actual: "🚵🏼♂"
+}, {
+  expected: "🚵🏽‍♂️",
+  actual: "🚵🏽♂"
+}, {
+  expected: "🚵🏾‍♂️",
+  actual: "🚵🏾♂"
+}, {
+  expected: "🚵🏿‍♂️",
+  actual: "🚵🏿♂"
+}, {
+  expected: "🚵🏻‍♀️",
+  actual: "🚵🏻♀"
+}, {
+  expected: "🚵🏼‍♀️",
+  actual: "🚵🏼♀"
+}, {
+  expected: "🚵🏽‍♀️",
+  actual: "🚵🏽♀"
+}, {
+  expected: "🚵🏾‍♀️",
+  actual: "🚵🏾♀"
+}, {
+  expected: "🚵🏿‍♀️",
+  actual: "🚵🏿♀"
+}, {
+  expected: "🤸🏻‍♂️",
+  actual: "🤸🏻♂"
+}, {
+  expected: "🤸🏼‍♂️",
+  actual: "🤸🏼♂"
+}, {
+  expected: "🤸🏽‍♂️",
+  actual: "🤸🏽♂"
+}, {
+  expected: "🤸🏾‍♂️",
+  actual: "🤸🏾♂"
+}, {
+  expected: "🤸🏿‍♂️",
+  actual: "🤸🏿♂"
+}, {
+  expected: "🤸🏻‍♀️",
+  actual: "🤸🏻♀"
+}, {
+  expected: "🤸🏼‍♀️",
+  actual: "🤸🏼♀"
+}, {
+  expected: "🤸🏽‍♀️",
+  actual: "🤸🏽♀"
+}, {
+  expected: "🤸🏾‍♀️",
+  actual: "🤸🏾♀"
+}, {
+  expected: "🤸🏿‍♀️",
+  actual: "🤸🏿♀"
+}, {
+  expected: "🤽🏻‍♂️",
+  actual: "🤽🏻♂"
+}, {
+  expected: "🤽🏼‍♂️",
+  actual: "🤽🏼♂"
+}, {
+  expected: "🤽🏽‍♂️",
+  actual: "🤽🏽♂"
+}, {
+  expected: "🤽🏾‍♂️",
+  actual: "🤽🏾♂"
+}, {
+  expected: "🤽🏿‍♂️",
+  actual: "🤽🏿♂"
+}, {
+  expected: "🤽🏻‍♀️",
+  actual: "🤽🏻♀"
+}, {
+  expected: "🤽🏼‍♀️",
+  actual: "🤽🏼♀"
+}, {
+  expected: "🤽🏽‍♀️",
+  actual: "🤽🏽♀"
+}, {
+  expected: "🤽🏾‍♀️",
+  actual: "🤽🏾♀"
+}, {
+  expected: "🤽🏿‍♀️",
+  actual: "🤽🏿♀"
+}, {
+  expected: "🤾🏻‍♂️",
+  actual: "🤾🏻♂"
+}, {
+  expected: "🤾🏼‍♂️",
+  actual: "🤾🏼♂"
+}, {
+  expected: "🤾🏽‍♂️",
+  actual: "🤾🏽♂"
+}, {
+  expected: "🤾🏾‍♂️",
+  actual: "🤾🏾♂"
+}, {
+  expected: "🤾🏿‍♂️",
+  actual: "🤾🏿♂"
+}, {
+  expected: "🤾🏻‍♀️",
+  actual: "🤾🏻♀"
+}, {
+  expected: "🤾🏼‍♀️",
+  actual: "🤾🏼♀"
+}, {
+  expected: "🤾🏽‍♀️",
+  actual: "🤾🏽♀"
+}, {
+  expected: "🤾🏾‍♀️",
+  actual: "🤾🏾♀"
+}, {
+  expected: "🤾🏿‍♀️",
+  actual: "🤾🏿♀"
+}, {
+  expected: "🤹🏻‍♂️",
+  actual: "🤹🏻♂"
+}, {
+  expected: "🤹🏼‍♂️",
+  actual: "🤹🏼♂"
+}, {
+  expected: "🤹🏽‍♂️",
+  actual: "🤹🏽♂"
+}, {
+  expected: "🤹🏾‍♂️",
+  actual: "🤹🏾♂"
+}, {
+  expected: "🤹🏿‍♂️",
+  actual: "🤹🏿♂"
+}, {
+  expected: "🤹🏻‍♀️",
+  actual: "🤹🏻♀"
+}, {
+  expected: "🤹🏼‍♀️",
+  actual: "🤹🏼♀"
+}, {
+  expected: "🤹🏽‍♀️",
+  actual: "🤹🏽♀"
+}, {
+  expected: "🤹🏾‍♀️",
+  actual: "🤹🏾♀"
+}, {
+  expected: "🤹🏿‍♀️",
+  actual: "🤹🏿♀"
+}, {
+  expected: "🧘🏻‍♂️",
+  actual: "🧘🏻♂"
+}, {
+  expected: "🧘🏼‍♂️",
+  actual: "🧘🏼♂"
+}, {
+  expected: "🧘🏽‍♂️",
+  actual: "🧘🏽♂"
+}, {
+  expected: "🧘🏾‍♂️",
+  actual: "🧘🏾♂"
+}, {
+  expected: "🧘🏿‍♂️",
+  actual: "🧘🏿♂"
+}, {
+  expected: "🧘🏻‍♀️",
+  actual: "🧘🏻♀"
+}, {
+  expected: "🧘🏼‍♀️",
+  actual: "🧘🏼♀"
+}, {
+  expected: "🧘🏽‍♀️",
+  actual: "🧘🏽♀"
+}, {
+  expected: "🧘🏾‍♀️",
+  actual: "🧘🏾♀"
+}, {
+  expected: "🧘🏿‍♀️",
+  actual: "🧘🏿♀"
+}, {
+  expected: "👩‍❤️‍👨",
+  actual: "👩❤👨"
+}, {
+  expected: "👨‍❤️‍👨",
+  actual: "👨❤👨"
+}, {
+  expected: "👩‍❤️‍👩",
+  actual: "👩❤👩"
+}, {
+  expected: "👨‍👦",
+  actual: "👨‍👦"
+}, {
+  expected: "👨‍👧",
+  actual: "👨‍👧"
+}, {
+  expected: "👩‍👦",
+  actual: "👩‍👦"
+}, {
+  expected: "👩‍👧",
+  actual: "👩‍👧"
+}, {
+  expected: "🐕‍🦺",
+  actual: "🐕‍🦺"
+}, {
+  expected: "🏳‍🌈",
+  actual: "🏳‍🌈"
+}, {
+  expected: "🍄‍🟫",
+  actual: "🍄‍🟫"
+}, {
+  expected: "🍋‍🟩",
+  actual: "🍋‍🟩"
+}, {
+  expected: "🐦‍🔥",
+  actual: "🐦‍🔥"
+}, {
+  expected: "👨‍🦯‍➡️",
+  actual: "👨🦯➡"
+}, {
+  expected: "👨‍🦼‍➡️",
+  actual: "👨🦼➡"
+}, {
+  expected: "👨‍🦽‍➡️",
+  actual: "👨🦽➡"
+}, {
+  expected: "👩‍🦯‍➡️",
+  actual: "👩🦯➡"
+}, {
+  expected: "👩‍🦼‍➡️",
+  actual: "👩🦼➡"
+}, {
+  expected: "👩‍🦽‍➡️",
+  actual: "👩🦽➡"
+}, {
+  expected: "🧑‍🦯‍➡️",
+  actual: "🧑🦯➡"
+}, {
+  expected: "🧑‍🦼‍➡️",
+  actual: "🧑🦼➡"
+}, {
+  expected: "🧑‍🦽‍➡️",
+  actual: "🧑🦽➡"
+}, {
+  expected: "🧑‍🧒",
+  actual: "🧑‍🧒"
+}, {
+  expected: "❤‍🔥",
+  actual: "❤‍🔥"
+}, {
+  expected: "❤‍🩹",
+  actual: "❤‍🩹"
+}, {
+  expected: "🧔‍♂",
+  actual: "🧔‍♂"
+}, {
+  expected: "🧔‍♀",
+  actual: "🧔‍♀"
+}, {
+  expected: "👱‍♀",
+  actual: "👱‍♀"
+}, {
+  expected: "👱‍♂",
+  actual: "👱‍♂"
+}, {
+  expected: "🙍‍♂",
+  actual: "🙍‍♂"
+}, {
+  expected: "🙍‍♀",
+  actual: "🙍‍♀"
+}, {
+  expected: "🙎‍♂",
+  actual: "🙎‍♂"
+}, {
+  expected: "🙎‍♀",
+  actual: "🙎‍♀"
+}, {
+  expected: "🙅‍♂",
+  actual: "🙅‍♂"
+}, {
+  expected: "🙅‍♀",
+  actual: "🙅‍♀"
+}, {
+  expected: "🙆‍♂",
+  actual: "🙆‍♂"
+}, {
+  expected: "🙆‍♀",
+  actual: "🙆‍♀"
+}, {
+  expected: "💁‍♂",
+  actual: "💁‍♂"
+}, {
+  expected: "💁‍♀",
+  actual: "💁‍♀"
+}, {
+  expected: "🙋‍♂",
+  actual: "🙋‍♂"
+}, {
+  expected: "🙋‍♀",
+  actual: "🙋‍♀"
+}, {
+  expected: "🧏‍♂",
+  actual: "🧏‍♂"
+}, {
+  expected: "🧏‍♀",
+  actual: "🧏‍♀"
+}, {
+  expected: "🙇‍♂",
+  actual: "🙇‍♂"
+}, {
+  expected: "🙇‍♀",
+  actual: "🙇‍♀"
+}, {
+  expected: "🤦‍♂",
+  actual: "🤦‍♂"
+}, {
+  expected: "🤦‍♀",
+  actual: "🤦‍♀"
+}, {
+  expected: "🤷‍♂",
+  actual: "🤷‍♂"
+}, {
+  expected: "🤷‍♀",
+  actual: "🤷‍♀"
+}, {
+  expected: "🧑‍⚕",
+  actual: "🧑‍⚕"
+}, {
+  expected: "👨‍⚕",
+  actual: "👨‍⚕"
+}, {
+  expected: "👩‍⚕",
+  actual: "👩‍⚕"
+}, {
+  expected: "🧑‍⚖",
+  actual: "🧑‍⚖"
+}, {
+  expected: "👨‍⚖",
+  actual: "👨‍⚖"
+}, {
+  expected: "👩‍⚖",
+  actual: "👩‍⚖"
+}, {
+  expected: "🧑‍✈",
+  actual: "🧑‍✈"
+}, {
+  expected: "👨‍✈",
+  actual: "👨‍✈"
+}, {
+  expected: "👩‍✈",
+  actual: "👩‍✈"
+}, {
+  expected: "👮‍♂",
+  actual: "👮‍♂"
+}, {
+  expected: "👮‍♀",
+  actual: "👮‍♀"
+}, {
+  expected: "🕵‍♂",
+  actual: "🕵‍♂"
+}, {
+  expected: "🕵‍♀",
+  actual: "🕵‍♀"
+}, {
+  expected: "💂‍♂",
+  actual: "💂‍♂"
+}, {
+  expected: "💂‍♀",
+  actual: "💂‍♀"
+}, {
+  expected: "👷‍♂",
+  actual: "👷‍♂"
+}, {
+  expected: "👷‍♀",
+  actual: "👷‍♀"
+}, {
+  expected: "👳‍♂",
+  actual: "👳‍♂"
+}, {
+  expected: "👳‍♀",
+  actual: "👳‍♀"
+}, {
+  expected: "🤵‍♂",
+  actual: "🤵‍♂"
+}, {
+  expected: "🤵‍♀",
+  actual: "🤵‍♀"
+}, {
+  expected: "👰‍♂",
+  actual: "👰‍♂"
+}, {
+  expected: "👰‍♀",
+  actual: "👰‍♀"
+}, {
+  expected: "🦸‍♂",
+  actual: "🦸‍♂"
+}, {
+  expected: "🦸‍♀",
+  actual: "🦸‍♀"
+}, {
+  expected: "🦹‍♂",
+  actual: "🦹‍♂"
+}, {
+  expected: "🦹‍♀",
+  actual: "🦹‍♀"
+}, {
+  expected: "🧙‍♂",
+  actual: "🧙‍♂"
+}, {
+  expected: "🧙‍♀",
+  actual: "🧙‍♀"
+}, {
+  expected: "🧚‍♂",
+  actual: "🧚‍♂"
+}, {
+  expected: "🧚‍♀",
+  actual: "🧚‍♀"
+}, {
+  expected: "🧛‍♂",
+  actual: "🧛‍♂"
+}, {
+  expected: "🧛‍♀",
+  actual: "🧛‍♀"
+}, {
+  expected: "🧜‍♂",
+  actual: "🧜‍♂"
+}, {
+  expected: "🧜‍♀",
+  actual: "🧜‍♀"
+}, {
+  expected: "🧝‍♂",
+  actual: "🧝‍♂"
+}, {
+  expected: "🧝‍♀",
+  actual: "🧝‍♀"
+}, {
+  expected: "🧞‍♂",
+  actual: "🧞‍♂"
+}, {
+  expected: "🧞‍♀",
+  actual: "🧞‍♀"
+}, {
+  expected: "🧟‍♂",
+  actual: "🧟‍♂"
+}, {
+  expected: "🧟‍♀",
+  actual: "🧟‍♀"
+}, {
+  expected: "💆‍♂",
+  actual: "💆‍♂"
+}, {
+  expected: "💆‍♀",
+  actual: "💆‍♀"
+}, {
+  expected: "💇‍♂",
+  actual: "💇‍♂"
+}, {
+  expected: "💇‍♀",
+  actual: "💇‍♀"
+}, {
+  expected: "🚶‍♂",
+  actual: "🚶‍♂"
+}, {
+  expected: "🚶‍♀",
+  actual: "🚶‍♀"
+}, {
+  expected: "🧍‍♂",
+  actual: "🧍‍♂"
+}, {
+  expected: "🧍‍♀",
+  actual: "🧍‍♀"
+}, {
+  expected: "🧎‍♂",
+  actual: "🧎‍♂"
+}, {
+  expected: "🧎‍♀",
+  actual: "🧎‍♀"
+}, {
+  expected: "🏃‍♂",
+  actual: "🏃‍♂"
+}, {
+  expected: "🏃‍♀",
+  actual: "🏃‍♀"
+}, {
+  expected: "👯‍♂",
+  actual: "👯‍♂"
+}, {
+  expected: "👯‍♀",
+  actual: "👯‍♀"
+}, {
+  expected: "🧖‍♂",
+  actual: "🧖‍♂"
+}, {
+  expected: "🧖‍♀",
+  actual: "🧖‍♀"
+}, {
+  expected: "🧗‍♂",
+  actual: "🧗‍♂"
+}, {
+  expected: "🧗‍♀",
+  actual: "🧗‍♀"
+}, {
+  expected: "🏌‍♂",
+  actual: "🏌‍♂"
+}, {
+  expected: "🏌‍♀",
+  actual: "🏌‍♀"
+}, {
+  expected: "🏄‍♂",
+  actual: "🏄‍♂"
+}, {
+  expected: "🏄‍♀",
+  actual: "🏄‍♀"
+}, {
+  expected: "🚣‍♂",
+  actual: "🚣‍♂"
+}, {
+  expected: "🚣‍♀",
+  actual: "🚣‍♀"
+}, {
+  expected: "🏊‍♂",
+  actual: "🏊‍♂"
+}, {
+  expected: "🏊‍♀",
+  actual: "🏊‍♀"
+}, {
+  expected: "⛹🏻‍♂️",
+  actual: "⛹🏻♂"
+}, {
+  expected: "⛹🏼‍♂️",
+  actual: "⛹🏼♂"
+}, {
+  expected: "⛹🏽‍♂️",
+  actual: "⛹🏽♂"
+}, {
+  expected: "⛹🏾‍♂️",
+  actual: "⛹🏾♂"
+}, {
+  expected: "⛹🏿‍♂️",
+  actual: "⛹🏿♂"
+}, {
+  expected: "⛹🏻‍♀️",
+  actual: "⛹🏻♀"
+}, {
+  expected: "⛹🏼‍♀️",
+  actual: "⛹🏼♀"
+}, {
+  expected: "⛹🏽‍♀️",
+  actual: "⛹🏽♀"
+}, {
+  expected: "⛹🏾‍♀️",
+  actual: "⛹🏾♀"
+}, {
+  expected: "⛹🏿‍♀️",
+  actual: "⛹🏿♀"
+}, {
+  expected: "🏋‍♂",
+  actual: "🏋‍♂"
+}, {
+  expected: "🏋‍♀",
+  actual: "🏋‍♀"
+}, {
+  expected: "🚴‍♂",
+  actual: "🚴‍♂"
+}, {
+  expected: "🚴‍♀",
+  actual: "🚴‍♀"
+}, {
+  expected: "🚵‍♂",
+  actual: "🚵‍♂"
+}, {
+  expected: "🚵‍♀",
+  actual: "🚵‍♀"
+}, {
+  expected: "🤸‍♂",
+  actual: "🤸‍♂"
+}, {
+  expected: "🤸‍♀",
+  actual: "🤸‍♀"
+}, {
+  expected: "🤼‍♂",
+  actual: "🤼‍♂"
+}, {
+  expected: "🤼‍♀",
+  actual: "🤼‍♀"
+}, {
+  expected: "🤽‍♂",
+  actual: "🤽‍♂"
+}, {
+  expected: "🤽‍♀",
+  actual: "🤽‍♀"
+}, {
+  expected: "🤾‍♂",
+  actual: "🤾‍♂"
+}, {
+  expected: "🤾‍♀",
+  actual: "🤾‍♀"
+}, {
+  expected: "🤹‍♂",
+  actual: "🤹‍♂"
+}, {
+  expected: "🤹‍♀",
+  actual: "🤹‍♀"
+}, {
+  expected: "🧘‍♂",
+  actual: "🧘‍♂"
+}, {
+  expected: "🧘‍♀",
+  actual: "🧘‍♀"
+}, {
+  expected: "🐈‍⬛",
+  actual: "🐈‍⬛"
+}, {
+  expected: "🐻‍❄",
+  actual: "🐻‍❄"
+}, {
+  expected: "🐦‍⬛",
+  actual: "🐦‍⬛"
+}, {
+  expected: "🏳‍⚧",
+  actual: "🏳‍⚧"
+}, {
+  expected: "🏴‍☠",
+  actual: "🏴‍☠"
+}, {
+  expected: "🏃‍♀️‍➡️",
+  actual: "🏃♀➡"
+}, {
+  expected: "🏃‍♂️‍➡️",
+  actual: "🏃♂➡"
+}, {
+  expected: "🚶‍♀️‍➡️",
+  actual: "🚶♀➡"
+}, {
+  expected: "🚶‍♂️‍➡️",
+  actual: "🚶♂➡"
+}, {
+  expected: "🧎‍♀️‍➡️",
+  actual: "🧎♀➡"
+}, {
+  expected: "🧎‍♂️‍➡️",
+  actual: "🧎♂➡"
+}, {
+  expected: "⛹‍♂",
+  actual: "⛹‍♂"
+}, {
+  expected: "⛹‍♀",
+  actual: "⛹‍♀"
+}, {
+  expected: "😶‍🌫️",
+  actual: "😶🌫"
+}, {
+  expected: "😮‍💨",
+  actual: "😮💨"
+}, {
+  expected: "😵‍💫",
+  actual: "😵💫"
+}, {
+  expected: "👁️‍🗨️",
+  actual: "👁🗨"
+}, {
+  expected: "👋🏻",
+  actual: "👋🏻"
+}, {
+  expected: "👋🏼",
+  actual: "👋🏼"
+}, {
+  expected: "👋🏽",
+  actual: "👋🏽"
+}, {
+  expected: "👋🏾",
+  actual: "👋🏾"
+}, {
+  expected: "👋🏿",
+  actual: "👋🏿"
+}, {
+  expected: "🤚🏻",
+  actual: "🤚🏻"
+}, {
+  expected: "🤚🏼",
+  actual: "🤚🏼"
+}, {
+  expected: "🤚🏽",
+  actual: "🤚🏽"
+}, {
+  expected: "🤚🏾",
+  actual: "🤚🏾"
+}, {
+  expected: "🤚🏿",
+  actual: "🤚🏿"
+}, {
+  expected: "🖐🏻",
+  actual: "🖐🏻"
+}, {
+  expected: "🖐🏼",
+  actual: "🖐🏼"
+}, {
+  expected: "🖐🏽",
+  actual: "🖐🏽"
+}, {
+  expected: "🖐🏾",
+  actual: "🖐🏾"
+}, {
+  expected: "🖐🏿",
+  actual: "🖐🏿"
+}, {
+  expected: "🖖🏻",
+  actual: "🖖🏻"
+}, {
+  expected: "🖖🏼",
+  actual: "🖖🏼"
+}, {
+  expected: "🖖🏽",
+  actual: "🖖🏽"
+}, {
+  expected: "🖖🏾",
+  actual: "🖖🏾"
+}, {
+  expected: "🖖🏿",
+  actual: "🖖🏿"
+}, {
+  expected: "🫱🏻",
+  actual: "🫱🏻"
+}, {
+  expected: "🫱🏼",
+  actual: "🫱🏼"
+}, {
+  expected: "🫱🏽",
+  actual: "🫱🏽"
+}, {
+  expected: "🫱🏾",
+  actual: "🫱🏾"
+}, {
+  expected: "🫱🏿",
+  actual: "🫱🏿"
+}, {
+  expected: "🫲🏻",
+  actual: "🫲🏻"
+}, {
+  expected: "🫲🏼",
+  actual: "🫲🏼"
+}, {
+  expected: "🫲🏽",
+  actual: "🫲🏽"
+}, {
+  expected: "🫲🏾",
+  actual: "🫲🏾"
+}, {
+  expected: "🫲🏿",
+  actual: "🫲🏿"
+}, {
+  expected: "🫳🏻",
+  actual: "🫳🏻"
+}, {
+  expected: "🫳🏼",
+  actual: "🫳🏼"
+}, {
+  expected: "🫳🏽",
+  actual: "🫳🏽"
+}, {
+  expected: "🫳🏾",
+  actual: "🫳🏾"
+}, {
+  expected: "🫳🏿",
+  actual: "🫳🏿"
+}, {
+  expected: "🫴🏻",
+  actual: "🫴🏻"
+}, {
+  expected: "🫴🏼",
+  actual: "🫴🏼"
+}, {
+  expected: "🫴🏽",
+  actual: "🫴🏽"
+}, {
+  expected: "🫴🏾",
+  actual: "🫴🏾"
+}, {
+  expected: "🫴🏿",
+  actual: "🫴🏿"
+}, {
+  expected: "🫷🏻",
+  actual: "🫷🏻"
+}, {
+  expected: "🫷🏼",
+  actual: "🫷🏼"
+}, {
+  expected: "🫷🏽",
+  actual: "🫷🏽"
+}, {
+  expected: "🫷🏾",
+  actual: "🫷🏾"
+}, {
+  expected: "🫷🏿",
+  actual: "🫷🏿"
+}, {
+  expected: "🫸🏻",
+  actual: "🫸🏻"
+}, {
+  expected: "🫸🏼",
+  actual: "🫸🏼"
+}, {
+  expected: "🫸🏽",
+  actual: "🫸🏽"
+}, {
+  expected: "🫸🏾",
+  actual: "🫸🏾"
+}, {
+  expected: "🫸🏿",
+  actual: "🫸🏿"
+}, {
+  expected: "👌🏻",
+  actual: "👌🏻"
+}, {
+  expected: "👌🏼",
+  actual: "👌🏼"
+}, {
+  expected: "👌🏽",
+  actual: "👌🏽"
+}, {
+  expected: "👌🏾",
+  actual: "👌🏾"
+}, {
+  expected: "👌🏿",
+  actual: "👌🏿"
+}, {
+  expected: "🤌🏻",
+  actual: "🤌🏻"
+}, {
+  expected: "🤌🏼",
+  actual: "🤌🏼"
+}, {
+  expected: "🤌🏽",
+  actual: "🤌🏽"
+}, {
+  expected: "🤌🏾",
+  actual: "🤌🏾"
+}, {
+  expected: "🤌🏿",
+  actual: "🤌🏿"
+}, {
+  expected: "🤏🏻",
+  actual: "🤏🏻"
+}, {
+  expected: "🤏🏼",
+  actual: "🤏🏼"
+}, {
+  expected: "🤏🏽",
+  actual: "🤏🏽"
+}, {
+  expected: "🤏🏾",
+  actual: "🤏🏾"
+}, {
+  expected: "🤏🏿",
+  actual: "🤏🏿"
+}, {
+  expected: "🤞🏻",
+  actual: "🤞🏻"
+}, {
+  expected: "🤞🏼",
+  actual: "🤞🏼"
+}, {
+  expected: "🤞🏽",
+  actual: "🤞🏽"
+}, {
+  expected: "🤞🏾",
+  actual: "🤞🏾"
+}, {
+  expected: "🤞🏿",
+  actual: "🤞🏿"
+}, {
+  expected: "🫰🏻",
+  actual: "🫰🏻"
+}, {
+  expected: "🫰🏼",
+  actual: "🫰🏼"
+}, {
+  expected: "🫰🏽",
+  actual: "🫰🏽"
+}, {
+  expected: "🫰🏾",
+  actual: "🫰🏾"
+}, {
+  expected: "🫰🏿",
+  actual: "🫰🏿"
+}, {
+  expected: "🤟🏻",
+  actual: "🤟🏻"
+}, {
+  expected: "🤟🏼",
+  actual: "🤟🏼"
+}, {
+  expected: "🤟🏽",
+  actual: "🤟🏽"
+}, {
+  expected: "🤟🏾",
+  actual: "🤟🏾"
+}, {
+  expected: "🤟🏿",
+  actual: "🤟🏿"
+}, {
+  expected: "🤘🏻",
+  actual: "🤘🏻"
+}, {
+  expected: "🤘🏼",
+  actual: "🤘🏼"
+}, {
+  expected: "🤘🏽",
+  actual: "🤘🏽"
+}, {
+  expected: "🤘🏾",
+  actual: "🤘🏾"
+}, {
+  expected: "🤘🏿",
+  actual: "🤘🏿"
+}, {
+  expected: "🤙🏻",
+  actual: "🤙🏻"
+}, {
+  expected: "🤙🏼",
+  actual: "🤙🏼"
+}, {
+  expected: "🤙🏽",
+  actual: "🤙🏽"
+}, {
+  expected: "🤙🏾",
+  actual: "🤙🏾"
+}, {
+  expected: "🤙🏿",
+  actual: "🤙🏿"
+}, {
+  expected: "👈🏻",
+  actual: "👈🏻"
+}, {
+  expected: "👈🏼",
+  actual: "👈🏼"
+}, {
+  expected: "👈🏽",
+  actual: "👈🏽"
+}, {
+  expected: "👈🏾",
+  actual: "👈🏾"
+}, {
+  expected: "👈🏿",
+  actual: "👈🏿"
+}, {
+  expected: "👉🏼",
+  actual: "👉🏼"
+}, {
+  expected: "👉🏽",
+  actual: "👉🏽"
+}, {
+  expected: "👉🏾",
+  actual: "👉🏾"
+}, {
+  expected: "👉🏿",
+  actual: "👉🏿"
+}, {
+  expected: "👆🏻",
+  actual: "👆🏻"
+}, {
+  expected: "👆🏼",
+  actual: "👆🏼"
+}, {
+  expected: "👆🏽",
+  actual: "👆🏽"
+}, {
+  expected: "👆🏾",
+  actual: "👆🏾"
+}, {
+  expected: "👆🏿",
+  actual: "👆🏿"
+}, {
+  expected: "🖕🏻",
+  actual: "🖕🏻"
+}, {
+  expected: "🖕🏼",
+  actual: "🖕🏼"
+}, {
+  expected: "🖕🏽",
+  actual: "🖕🏽"
+}, {
+  expected: "🖕🏾",
+  actual: "🖕🏾"
+}, {
+  expected: "🖕🏿",
+  actual: "🖕🏿"
+}, {
+  expected: "👇🏻",
+  actual: "👇🏻"
+}, {
+  expected: "👇🏼",
+  actual: "👇🏼"
+}, {
+  expected: "👇🏽",
+  actual: "👇🏽"
+}, {
+  expected: "👇🏾",
+  actual: "👇🏾"
+}, {
+  expected: "👇🏿",
+  actual: "👇🏿"
+}, {
+  expected: "🫵🏻",
+  actual: "🫵🏻"
+}, {
+  expected: "🫵🏼",
+  actual: "🫵🏼"
+}, {
+  expected: "🫵🏽",
+  actual: "🫵🏽"
+}, {
+  expected: "🫵🏾",
+  actual: "🫵🏾"
+}, {
+  expected: "🫵🏿",
+  actual: "🫵🏿"
+}, {
+  expected: "👍🏻",
+  actual: "👍🏻"
+}, {
+  expected: "👍🏼",
+  actual: "👍🏼"
+}, {
+  expected: "👍🏽",
+  actual: "👍🏽"
+}, {
+  expected: "👍🏾",
+  actual: "👍🏾"
+}, {
+  expected: "👍🏿",
+  actual: "👍🏿"
+}, {
+  expected: "👎🏻",
+  actual: "👎🏻"
+}, {
+  expected: "👎🏼",
+  actual: "👎🏼"
+}, {
+  expected: "👎🏽",
+  actual: "👎🏽"
+}, {
+  expected: "👎🏾",
+  actual: "👎🏾"
+}, {
+  expected: "👎🏿",
+  actual: "👎🏿"
+}, {
+  expected: "👊🏻",
+  actual: "👊🏻"
+}, {
+  expected: "👊🏼",
+  actual: "👊🏼"
+}, {
+  expected: "👊🏽",
+  actual: "👊🏽"
+}, {
+  expected: "👊🏾",
+  actual: "👊🏾"
+}, {
+  expected: "👊🏿",
+  actual: "👊🏿"
+}, {
+  expected: "🤛🏻",
+  actual: "🤛🏻"
+}, {
+  expected: "🤛🏼",
+  actual: "🤛🏼"
+}, {
+  expected: "🤛🏽",
+  actual: "🤛🏽"
+}, {
+  expected: "🤛🏾",
+  actual: "🤛🏾"
+}, {
+  expected: "🤛🏿",
+  actual: "🤛🏿"
+}, {
+  expected: "🤜🏻",
+  actual: "🤜🏻"
+}, {
+  expected: "🤜🏼",
+  actual: "🤜🏼"
+}, {
+  expected: "🤜🏽",
+  actual: "🤜🏽"
+}, {
+  expected: "🤜🏾",
+  actual: "🤜🏾"
+}, {
+  expected: "🤜🏿",
+  actual: "🤜🏿"
+}, {
+  expected: "👏🏻",
+  actual: "👏🏻"
+}, {
+  expected: "👏🏼",
+  actual: "👏🏼"
+}, {
+  expected: "👏🏽",
+  actual: "👏🏽"
+}, {
+  expected: "👏🏾",
+  actual: "👏🏾"
+}, {
+  expected: "👏🏿",
+  actual: "👏🏿"
+}, {
+  expected: "🙌🏻",
+  actual: "🙌🏻"
+}, {
+  expected: "🙌🏼",
+  actual: "🙌🏼"
+}, {
+  expected: "🙌🏽",
+  actual: "🙌🏽"
+}, {
+  expected: "🙌🏾",
+  actual: "🙌🏾"
+}, {
+  expected: "🙌🏿",
+  actual: "🙌🏿"
+}, {
+  expected: "🫶🏻",
+  actual: "🫶🏻"
+}, {
+  expected: "🫶🏼",
+  actual: "🫶🏼"
+}, {
+  expected: "🫶🏽",
+  actual: "🫶🏽"
+}, {
+  expected: "🫶🏾",
+  actual: "🫶🏾"
+}, {
+  expected: "🫶🏿",
+  actual: "🫶🏿"
+}, {
+  expected: "👐🏻",
+  actual: "👐🏻"
+}, {
+  expected: "👐🏼",
+  actual: "👐🏼"
+}, {
+  expected: "👐🏽",
+  actual: "👐🏽"
+}, {
+  expected: "👐🏾",
+  actual: "👐🏾"
+}, {
+  expected: "👐🏿",
+  actual: "👐🏿"
+}, {
+  expected: "🤲🏻",
+  actual: "🤲🏻"
+}, {
+  expected: "🤲🏼",
+  actual: "🤲🏼"
+}, {
+  expected: "🤲🏽",
+  actual: "🤲🏽"
+}, {
+  expected: "🤲🏾",
+  actual: "🤲🏾"
+}, {
+  expected: "🤲🏿",
+  actual: "🤲🏿"
+}, {
+  expected: "🤝🏻",
+  actual: "🤝🏻"
+}, {
+  expected: "🤝🏼",
+  actual: "🤝🏼"
+}, {
+  expected: "🤝🏽",
+  actual: "🤝🏽"
+}, {
+  expected: "🤝🏾",
+  actual: "🤝🏾"
+}, {
+  expected: "🤝🏿",
+  actual: "🤝🏿"
+}, {
+  expected: "🙏🏻",
+  actual: "🙏🏻"
+}, {
+  expected: "🙏🏼",
+  actual: "🙏🏼"
+}, {
+  expected: "🙏🏽",
+  actual: "🙏🏽"
+}, {
+  expected: "🙏🏾",
+  actual: "🙏🏾"
+}, {
+  expected: "🙏🏿",
+  actual: "🙏🏿"
+}, {
+  expected: "💅🏻",
+  actual: "💅🏻"
+}, {
+  expected: "💅🏼",
+  actual: "💅🏼"
+}, {
+  expected: "💅🏽",
+  actual: "💅🏽"
+}, {
+  expected: "💅🏾",
+  actual: "💅🏾"
+}, {
+  expected: "💅🏿",
+  actual: "💅🏿"
+}, {
+  expected: "🤳🏻",
+  actual: "🤳🏻"
+}, {
+  expected: "🤳🏼",
+  actual: "🤳🏼"
+}, {
+  expected: "🤳🏽",
+  actual: "🤳🏽"
+}, {
+  expected: "🤳🏾",
+  actual: "🤳🏾"
+}, {
+  expected: "🤳🏿",
+  actual: "🤳🏿"
+}, {
+  expected: "💪🏻",
+  actual: "💪🏻"
+}, {
+  expected: "💪🏼",
+  actual: "💪🏼"
+}, {
+  expected: "💪🏽",
+  actual: "💪🏽"
+}, {
+  expected: "💪🏾",
+  actual: "💪🏾"
+}, {
+  expected: "💪🏿",
+  actual: "💪🏿"
+}, {
+  expected: "🦵🏻",
+  actual: "🦵🏻"
+}, {
+  expected: "🦵🏼",
+  actual: "🦵🏼"
+}, {
+  expected: "🦵🏽",
+  actual: "🦵🏽"
+}, {
+  expected: "🦵🏾",
+  actual: "🦵🏾"
+}, {
+  expected: "🦵🏿",
+  actual: "🦵🏿"
+}, {
+  expected: "🦶🏻",
+  actual: "🦶🏻"
+}, {
+  expected: "🦶🏼",
+  actual: "🦶🏼"
+}, {
+  expected: "🦶🏽",
+  actual: "🦶🏽"
+}, {
+  expected: "🦶🏾",
+  actual: "🦶🏾"
+}, {
+  expected: "🦶🏿",
+  actual: "🦶🏿"
+}, {
+  expected: "👂🏻",
+  actual: "👂🏻"
+}, {
+  expected: "👂🏼",
+  actual: "👂🏼"
+}, {
+  expected: "👂🏽",
+  actual: "👂🏽"
+}, {
+  expected: "👂🏾",
+  actual: "👂🏾"
+}, {
+  expected: "👂🏿",
+  actual: "👂🏿"
+}, {
+  expected: "🦻🏻",
+  actual: "🦻🏻"
+}, {
+  expected: "🦻🏼",
+  actual: "🦻🏼"
+}, {
+  expected: "🦻🏽",
+  actual: "🦻🏽"
+}, {
+  expected: "🦻🏾",
+  actual: "🦻🏾"
+}, {
+  expected: "🦻🏿",
+  actual: "🦻🏿"
+}, {
+  expected: "👃🏻",
+  actual: "👃🏻"
+}, {
+  expected: "👃🏼",
+  actual: "👃🏼"
+}, {
+  expected: "👃🏽",
+  actual: "👃🏽"
+}, {
+  expected: "👃🏾",
+  actual: "👃🏾"
+}, {
+  expected: "👃🏿",
+  actual: "👃🏿"
+}, {
+  expected: "👶🏻",
+  actual: "👶🏻"
+}, {
+  expected: "👶🏼",
+  actual: "👶🏼"
+}, {
+  expected: "👶🏽",
+  actual: "👶🏽"
+}, {
+  expected: "👶🏾",
+  actual: "👶🏾"
+}, {
+  expected: "👶🏿",
+  actual: "👶🏿"
+}, {
+  expected: "🧒🏻",
+  actual: "🧒🏻"
+}, {
+  expected: "🧒🏼",
+  actual: "🧒🏼"
+}, {
+  expected: "🧒🏽",
+  actual: "🧒🏽"
+}, {
+  expected: "🧒🏾",
+  actual: "🧒🏾"
+}, {
+  expected: "🧒🏿",
+  actual: "🧒🏿"
+}, {
+  expected: "👦🏻",
+  actual: "👦🏻"
+}, {
+  expected: "👦🏼",
+  actual: "👦🏼"
+}, {
+  expected: "👦🏽",
+  actual: "👦🏽"
+}, {
+  expected: "👦🏾",
+  actual: "👦🏾"
+}, {
+  expected: "👦🏿",
+  actual: "👦🏿"
+}, {
+  expected: "👧🏻",
+  actual: "👧🏻"
+}, {
+  expected: "👧🏼",
+  actual: "👧🏼"
+}, {
+  expected: "👧🏽",
+  actual: "👧🏽"
+}, {
+  expected: "👧🏾",
+  actual: "👧🏾"
+}, {
+  expected: "👧🏿",
+  actual: "👧🏿"
+}, {
+  expected: "🧑🏻",
+  actual: "🧑🏻"
+}, {
+  expected: "🧑🏼",
+  actual: "🧑🏼"
+}, {
+  expected: "🧑🏽",
+  actual: "🧑🏽"
+}, {
+  expected: "🧑🏾",
+  actual: "🧑🏾"
+}, {
+  expected: "🧑🏿",
+  actual: "🧑🏿"
+}, {
+  expected: "👱🏻",
+  actual: "👱🏻"
+}, {
+  expected: "👱🏼",
+  actual: "👱🏼"
+}, {
+  expected: "👱🏽",
+  actual: "👱🏽"
+}, {
+  expected: "👱🏾",
+  actual: "👱🏾"
+}, {
+  expected: "👱🏿",
+  actual: "👱🏿"
+}, {
+  expected: "👨🏻",
+  actual: "👨🏻"
+}, {
+  expected: "👨🏼",
+  actual: "👨🏼"
+}, {
+  expected: "👨🏽",
+  actual: "👨🏽"
+}, {
+  expected: "👨🏾",
+  actual: "👨🏾"
+}, {
+  expected: "👨🏿",
+  actual: "👨🏿"
+}, {
+  expected: "🧔🏻",
+  actual: "🧔🏻"
+}, {
+  expected: "🧔🏼",
+  actual: "🧔🏼"
+}, {
+  expected: "🧔🏽",
+  actual: "🧔🏽"
+}, {
+  expected: "🧔🏾",
+  actual: "🧔🏾"
+}, {
+  expected: "🧔🏿",
+  actual: "🧔🏿"
+}, {
+  expected: "👨‍🦰",
+  actual: "👨🦰"
+}, {
+  expected: "👨‍🦱",
+  actual: "👨🦱"
+}, {
+  expected: "👨‍🦳",
+  actual: "👨🦳"
+}, {
+  expected: "👨‍🦲",
+  actual: "👨🦲"
+}, {
+  expected: "👩🏻",
+  actual: "👩🏻"
+}, {
+  expected: "👩🏼",
+  actual: "👩🏼"
+}, {
+  expected: "👩🏽",
+  actual: "👩🏽"
+}, {
+  expected: "👩🏾",
+  actual: "👩🏾"
+}, {
+  expected: "👩🏿",
+  actual: "👩🏿"
+}, {
+  expected: "👩‍🦰",
+  actual: "👩🦰"
+}, {
+  expected: "🧑‍🦰",
+  actual: "🧑🦰"
+}, {
+  expected: "👩‍🦱",
+  actual: "👩🦱"
+}, {
+  expected: "🧑‍🦱",
+  actual: "🧑🦱"
+}, {
+  expected: "👩‍🦳",
+  actual: "👩🦳"
+}, {
+  expected: "🧑‍🦳",
+  actual: "🧑🦳"
+}, {
+  expected: "👩‍🦲",
+  actual: "👩🦲"
+}, {
+  expected: "🧑‍🦲",
+  actual: "🧑🦲"
+}, {
+  expected: "🧓🏻",
+  actual: "🧓🏻"
+}, {
+  expected: "🧓🏼",
+  actual: "🧓🏼"
+}, {
+  expected: "🧓🏽",
+  actual: "🧓🏽"
+}, {
+  expected: "🧓🏾",
+  actual: "🧓🏾"
+}, {
+  expected: "🧓🏿",
+  actual: "🧓🏿"
+}, {
+  expected: "👴🏻",
+  actual: "👴🏻"
+}, {
+  expected: "👴🏼",
+  actual: "👴🏼"
+}, {
+  expected: "👴🏽",
+  actual: "👴🏽"
+}, {
+  expected: "👴🏾",
+  actual: "👴🏾"
+}, {
+  expected: "👴🏿",
+  actual: "👴🏿"
+}, {
+  expected: "👵🏻",
+  actual: "👵🏻"
+}, {
+  expected: "👵🏼",
+  actual: "👵🏼"
+}, {
+  expected: "👵🏽",
+  actual: "👵🏽"
+}, {
+  expected: "👵🏾",
+  actual: "👵🏾"
+}, {
+  expected: "👵🏿",
+  actual: "👵🏿"
+}, {
+  expected: "🙍🏻",
+  actual: "🙍🏻"
+}, {
+  expected: "🙍🏼",
+  actual: "🙍🏼"
+}, {
+  expected: "🙍🏽",
+  actual: "🙍🏽"
+}, {
+  expected: "🙍🏾",
+  actual: "🙍🏾"
+}, {
+  expected: "🙍🏿",
+  actual: "🙍🏿"
+}, {
+  expected: "🙎🏻",
+  actual: "🙎🏻"
+}, {
+  expected: "🙎🏼",
+  actual: "🙎🏼"
+}, {
+  expected: "🙎🏽",
+  actual: "🙎🏽"
+}, {
+  expected: "🙎🏾",
+  actual: "🙎🏾"
+}, {
+  expected: "🙎🏿",
+  actual: "🙎🏿"
+}, {
+  expected: "🙅🏻",
+  actual: "🙅🏻"
+}, {
+  expected: "🙅🏼",
+  actual: "🙅🏼"
+}, {
+  expected: "🙅🏽",
+  actual: "🙅🏽"
+}, {
+  expected: "🙅🏾",
+  actual: "🙅🏾"
+}, {
+  expected: "🙅🏿",
+  actual: "🙅🏿"
+}, {
+  expected: "🙆🏻",
+  actual: "🙆🏻"
+}, {
+  expected: "🙆🏼",
+  actual: "🙆🏼"
+}, {
+  expected: "🙆🏽",
+  actual: "🙆🏽"
+}, {
+  expected: "🙆🏾",
+  actual: "🙆🏾"
+}, {
+  expected: "🙆🏿",
+  actual: "🙆🏿"
+}, {
+  expected: "💁🏻",
+  actual: "💁🏻"
+}, {
+  expected: "💁🏼",
+  actual: "💁🏼"
+}, {
+  expected: "💁🏽",
+  actual: "💁🏽"
+}, {
+  expected: "💁🏾",
+  actual: "💁🏾"
+}, {
+  expected: "💁🏿",
+  actual: "💁🏿"
+}, {
+  expected: "🙋🏻",
+  actual: "🙋🏻"
+}, {
+  expected: "🙋🏼",
+  actual: "🙋🏼"
+}, {
+  expected: "🙋🏽",
+  actual: "🙋🏽"
+}, {
+  expected: "🙋🏾",
+  actual: "🙋🏾"
+}, {
+  expected: "🙋🏿",
+  actual: "🙋🏿"
+}, {
+  expected: "🧏🏻",
+  actual: "🧏🏻"
+}, {
+  expected: "🧏🏼",
+  actual: "🧏🏼"
+}, {
+  expected: "🧏🏽",
+  actual: "🧏🏽"
+}, {
+  expected: "🧏🏾",
+  actual: "🧏🏾"
+}, {
+  expected: "🧏🏿",
+  actual: "🧏🏿"
+}, {
+  expected: "🙇🏻",
+  actual: "🙇🏻"
+}, {
+  expected: "🙇🏼",
+  actual: "🙇🏼"
+}, {
+  expected: "🙇🏽",
+  actual: "🙇🏽"
+}, {
+  expected: "🙇🏾",
+  actual: "🙇🏾"
+}, {
+  expected: "🙇🏿",
+  actual: "🙇🏿"
+}, {
+  expected: "🤦🏻",
+  actual: "🤦🏻"
+}, {
+  expected: "🤦🏼",
+  actual: "🤦🏼"
+}, {
+  expected: "🤦🏽",
+  actual: "🤦🏽"
+}, {
+  expected: "🤦🏾",
+  actual: "🤦🏾"
+}, {
+  expected: "🤦🏿",
+  actual: "🤦🏿"
+}, {
+  expected: "🤷🏻",
+  actual: "🤷🏻"
+}, {
+  expected: "🤷🏼",
+  actual: "🤷🏼"
+}, {
+  expected: "🤷🏽",
+  actual: "🤷🏽"
+}, {
+  expected: "🤷🏾",
+  actual: "🤷🏾"
+}, {
+  expected: "🤷🏿",
+  actual: "🤷🏿"
+}, {
+  expected: "🧑‍🎓",
+  actual: "🧑🎓"
+}, {
+  expected: "👨‍🎓",
+  actual: "👨🎓"
+}, {
+  expected: "👩‍🎓",
+  actual: "👩🎓"
+}, {
+  expected: "🧑‍🏫",
+  actual: "🧑🏫"
+}, {
+  expected: "👨‍🏫",
+  actual: "👨🏫"
+}, {
+  expected: "👩‍🏫",
+  actual: "👩🏫"
+}, {
+  expected: "🧑‍🌾",
+  actual: "🧑🌾"
+}, {
+  expected: "👨‍🌾",
+  actual: "👨🌾"
+}, {
+  expected: "👩‍🌾",
+  actual: "👩🌾"
+}, {
+  expected: "🧑‍🍳",
+  actual: "🧑🍳"
+}, {
+  expected: "👨‍🍳",
+  actual: "👨🍳"
+}, {
+  expected: "👩‍🍳",
+  actual: "👩🍳"
+}, {
+  expected: "🧑‍🔧",
+  actual: "🧑🔧"
+}, {
+  expected: "👨‍🔧",
+  actual: "👨🔧"
+}, {
+  expected: "👩‍🔧",
+  actual: "👩🔧"
+}, {
+  expected: "🧑‍🏭",
+  actual: "🧑🏭"
+}, {
+  expected: "👨‍🏭",
+  actual: "👨🏭"
+}, {
+  expected: "👩‍🏭",
+  actual: "👩🏭"
+}, {
+  expected: "🧑‍💼",
+  actual: "🧑💼"
+}, {
+  expected: "👨‍💼",
+  actual: "👨💼"
+}, {
+  expected: "👩‍💼",
+  actual: "👩💼"
+}, {
+  expected: "🧑‍🔬",
+  actual: "🧑🔬"
+}, {
+  expected: "👨‍🔬",
+  actual: "👨🔬"
+}, {
+  expected: "👩‍🔬",
+  actual: "👩🔬"
+}, {
+  expected: "🧑‍💻",
+  actual: "🧑💻"
+}, {
+  expected: "👨‍💻",
+  actual: "👨💻"
+}, {
+  expected: "👩‍💻",
+  actual: "👩💻"
+}, {
+  expected: "🧑‍🎤",
+  actual: "🧑🎤"
+}, {
+  expected: "👨‍🎤",
+  actual: "👨🎤"
+}, {
+  expected: "👩‍🎤",
+  actual: "👩🎤"
+}, {
+  expected: "🧑‍🎨",
+  actual: "🧑🎨"
+}, {
+  expected: "👨‍🎨",
+  actual: "👨🎨"
+}, {
+  expected: "👩‍🎨",
+  actual: "👩🎨"
+}, {
+  expected: "🧑‍🚀",
+  actual: "🧑🚀"
+}, {
+  expected: "👨‍🚀",
+  actual: "👨🚀"
+}, {
+  expected: "👩‍🚀",
+  actual: "👩🚀"
+}, {
+  expected: "🧑‍🚒",
+  actual: "🧑🚒"
+}, {
+  expected: "👨‍🚒",
+  actual: "👨🚒"
+}, {
+  expected: "👩‍🚒",
+  actual: "👩🚒"
+}, {
+  expected: "👮🏻",
+  actual: "👮🏻"
+}, {
+  expected: "👮🏼",
+  actual: "👮🏼"
+}, {
+  expected: "👮🏽",
+  actual: "👮🏽"
+}, {
+  expected: "👮🏾",
+  actual: "👮🏾"
+}, {
+  expected: "👮🏿",
+  actual: "👮🏿"
+}, {
+  expected: "🕵🏻",
+  actual: "🕵🏻"
+}, {
+  expected: "🕵🏼",
+  actual: "🕵🏼"
+}, {
+  expected: "🕵🏽",
+  actual: "🕵🏽"
+}, {
+  expected: "🕵🏾",
+  actual: "🕵🏾"
+}, {
+  expected: "🕵🏿",
+  actual: "🕵🏿"
+}, {
+  expected: "💂🏻",
+  actual: "💂🏻"
+}, {
+  expected: "💂🏼",
+  actual: "💂🏼"
+}, {
+  expected: "💂🏽",
+  actual: "💂🏽"
+}, {
+  expected: "💂🏾",
+  actual: "💂🏾"
+}, {
+  expected: "💂🏿",
+  actual: "💂🏿"
+}, {
+  expected: "🥷🏻",
+  actual: "🥷🏻"
+}, {
+  expected: "🥷🏼",
+  actual: "🥷🏼"
+}, {
+  expected: "🥷🏽",
+  actual: "🥷🏽"
+}, {
+  expected: "🥷🏾",
+  actual: "🥷🏾"
+}, {
+  expected: "🥷🏿",
+  actual: "🥷🏿"
+}, {
+  expected: "👷🏻",
+  actual: "👷🏻"
+}, {
+  expected: "👷🏼",
+  actual: "👷🏼"
+}, {
+  expected: "👷🏽",
+  actual: "👷🏽"
+}, {
+  expected: "👷🏾",
+  actual: "👷🏾"
+}, {
+  expected: "👷🏿",
+  actual: "👷🏿"
+}, {
+  expected: "🫅🏻",
+  actual: "🫅🏻"
+}, {
+  expected: "🫅🏼",
+  actual: "🫅🏼"
+}, {
+  expected: "🫅🏽",
+  actual: "🫅🏽"
+}, {
+  expected: "🫅🏾",
+  actual: "🫅🏾"
+}, {
+  expected: "🫅🏿",
+  actual: "🫅🏿"
+}, {
+  expected: "🤴🏻",
+  actual: "🤴🏻"
+}, {
+  expected: "🤴🏼",
+  actual: "🤴🏼"
+}, {
+  expected: "🤴🏽",
+  actual: "🤴🏽"
+}, {
+  expected: "🤴🏾",
+  actual: "🤴🏾"
+}, {
+  expected: "🤴🏿",
+  actual: "🤴🏿"
+}, {
+  expected: "👸🏻",
+  actual: "👸🏻"
+}, {
+  expected: "👸🏼",
+  actual: "👸🏼"
+}, {
+  expected: "👸🏽",
+  actual: "👸🏽"
+}, {
+  expected: "👸🏾",
+  actual: "👸🏾"
+}, {
+  expected: "👸🏿",
+  actual: "👸🏿"
+}, {
+  expected: "👳🏻",
+  actual: "👳🏻"
+}, {
+  expected: "👳🏼",
+  actual: "👳🏼"
+}, {
+  expected: "👳🏽",
+  actual: "👳🏽"
+}, {
+  expected: "👳🏾",
+  actual: "👳🏾"
+}, {
+  expected: "👳🏿",
+  actual: "👳🏿"
+}, {
+  expected: "👲🏻",
+  actual: "👲🏻"
+}, {
+  expected: "👲🏼",
+  actual: "👲🏼"
+}, {
+  expected: "👲🏽",
+  actual: "👲🏽"
+}, {
+  expected: "👲🏾",
+  actual: "👲🏾"
+}, {
+  expected: "👲🏿",
+  actual: "👲🏿"
+}, {
+  expected: "🧕🏻",
+  actual: "🧕🏻"
+}, {
+  expected: "🧕🏼",
+  actual: "🧕🏼"
+}, {
+  expected: "🧕🏽",
+  actual: "🧕🏽"
+}, {
+  expected: "🧕🏾",
+  actual: "🧕🏾"
+}, {
+  expected: "🧕🏿",
+  actual: "🧕🏿"
+}, {
+  expected: "🤵🏻",
+  actual: "🤵🏻"
+}, {
+  expected: "🤵🏼",
+  actual: "🤵🏼"
+}, {
+  expected: "🤵🏽",
+  actual: "🤵🏽"
+}, {
+  expected: "🤵🏾",
+  actual: "🤵🏾"
+}, {
+  expected: "🤵🏿",
+  actual: "🤵🏿"
+}, {
+  expected: "👰🏻",
+  actual: "👰🏻"
+}, {
+  expected: "👰🏼",
+  actual: "👰🏼"
+}, {
+  expected: "👰🏽",
+  actual: "👰🏽"
+}, {
+  expected: "👰🏾",
+  actual: "👰🏾"
+}, {
+  expected: "👰🏿",
+  actual: "👰🏿"
+}, {
+  expected: "🤰🏻",
+  actual: "🤰🏻"
+}, {
+  expected: "🤰🏼",
+  actual: "🤰🏼"
+}, {
+  expected: "🤰🏽",
+  actual: "🤰🏽"
+}, {
+  expected: "🤰🏾",
+  actual: "🤰🏾"
+}, {
+  expected: "🤰🏿",
+  actual: "🤰🏿"
+}, {
+  expected: "🫃🏻",
+  actual: "🫃🏻"
+}, {
+  expected: "🫃🏼",
+  actual: "🫃🏼"
+}, {
+  expected: "🫃🏽",
+  actual: "🫃🏽"
+}, {
+  expected: "🫃🏾",
+  actual: "🫃🏾"
+}, {
+  expected: "🫃🏿",
+  actual: "🫃🏿"
+}, {
+  expected: "🫄🏻",
+  actual: "🫄🏻"
+}, {
+  expected: "🫄🏼",
+  actual: "🫄🏼"
+}, {
+  expected: "🫄🏽",
+  actual: "🫄🏽"
+}, {
+  expected: "🫄🏾",
+  actual: "🫄🏾"
+}, {
+  expected: "🫄🏿",
+  actual: "🫄🏿"
+}, {
+  expected: "🤱🏻",
+  actual: "🤱🏻"
+}, {
+  expected: "🤱🏼",
+  actual: "🤱🏼"
+}, {
+  expected: "🤱🏽",
+  actual: "🤱🏽"
+}, {
+  expected: "🤱🏾",
+  actual: "🤱🏾"
+}, {
+  expected: "🤱🏿",
+  actual: "🤱🏿"
+}, {
+  expected: "👩‍🍼",
+  actual: "👩🍼"
+}, {
+  expected: "👨‍🍼",
+  actual: "👨🍼"
+}, {
+  expected: "🧑‍🍼",
+  actual: "🧑🍼"
+}, {
+  expected: "👼🏻",
+  actual: "👼🏻"
+}, {
+  expected: "👼🏼",
+  actual: "👼🏼"
+}, {
+  expected: "👼🏽",
+  actual: "👼🏽"
+}, {
+  expected: "👼🏾",
+  actual: "👼🏾"
+}, {
+  expected: "👼🏿",
+  actual: "👼🏿"
+}, {
+  expected: "🎅🏻",
+  actual: "🎅🏻"
+}, {
+  expected: "🎅🏼",
+  actual: "🎅🏼"
+}, {
+  expected: "🎅🏽",
+  actual: "🎅🏽"
+}, {
+  expected: "🎅🏾",
+  actual: "🎅🏾"
+}, {
+  expected: "🎅🏿",
+  actual: "🎅🏿"
+}, {
+  expected: "🤶🏻",
+  actual: "🤶🏻"
+}, {
+  expected: "🤶🏼",
+  actual: "🤶🏼"
+}, {
+  expected: "🤶🏽",
+  actual: "🤶🏽"
+}, {
+  expected: "🤶🏾",
+  actual: "🤶🏾"
+}, {
+  expected: "🤶🏿",
+  actual: "🤶🏿"
+}, {
+  expected: "🧑‍🎄",
+  actual: "🧑🎄"
+}, {
+  expected: "🦸🏻",
+  actual: "🦸🏻"
+}, {
+  expected: "🦸🏼",
+  actual: "🦸🏼"
+}, {
+  expected: "🦸🏽",
+  actual: "🦸🏽"
+}, {
+  expected: "🦸🏾",
+  actual: "🦸🏾"
+}, {
+  expected: "🦸🏿",
+  actual: "🦸🏿"
+}, {
+  expected: "🦹🏻",
+  actual: "🦹🏻"
+}, {
+  expected: "🦹🏼",
+  actual: "🦹🏼"
+}, {
+  expected: "🦹🏽",
+  actual: "🦹🏽"
+}, {
+  expected: "🦹🏾",
+  actual: "🦹🏾"
+}, {
+  expected: "🦹🏿",
+  actual: "🦹🏿"
+}, {
+  expected: "🧙🏻",
+  actual: "🧙🏻"
+}, {
+  expected: "🧙🏼",
+  actual: "🧙🏼"
+}, {
+  expected: "🧙🏽",
+  actual: "🧙🏽"
+}, {
+  expected: "🧙🏾",
+  actual: "🧙🏾"
+}, {
+  expected: "🧙🏿",
+  actual: "🧙🏿"
+}, {
+  expected: "🧚🏻",
+  actual: "🧚🏻"
+}, {
+  expected: "🧚🏼",
+  actual: "🧚🏼"
+}, {
+  expected: "🧚🏽",
+  actual: "🧚🏽"
+}, {
+  expected: "🧚🏾",
+  actual: "🧚🏾"
+}, {
+  expected: "🧚🏿",
+  actual: "🧚🏿"
+}, {
+  expected: "🧛🏻",
+  actual: "🧛🏻"
+}, {
+  expected: "🧛🏼",
+  actual: "🧛🏼"
+}, {
+  expected: "🧛🏽",
+  actual: "🧛🏽"
+}, {
+  expected: "🧛🏾",
+  actual: "🧛🏾"
+}, {
+  expected: "🧛🏿",
+  actual: "🧛🏿"
+}, {
+  expected: "🧜🏻",
+  actual: "🧜🏻"
+}, {
+  expected: "🧜🏼",
+  actual: "🧜🏼"
+}, {
+  expected: "🧜🏽",
+  actual: "🧜🏽"
+}, {
+  expected: "🧜🏾",
+  actual: "🧜🏾"
+}, {
+  expected: "🧜🏿",
+  actual: "🧜🏿"
+}, {
+  expected: "🧝🏻",
+  actual: "🧝🏻"
+}, {
+  expected: "🧝🏼",
+  actual: "🧝🏼"
+}, {
+  expected: "🧝🏽",
+  actual: "🧝🏽"
+}, {
+  expected: "🧝🏾",
+  actual: "🧝🏾"
+}, {
+  expected: "🧝🏿",
+  actual: "🧝🏿"
+}, {
+  expected: "💆🏻",
+  actual: "💆🏻"
+}, {
+  expected: "💆🏼",
+  actual: "💆🏼"
+}, {
+  expected: "💆🏽",
+  actual: "💆🏽"
+}, {
+  expected: "💆🏾",
+  actual: "💆🏾"
+}, {
+  expected: "💆🏿",
+  actual: "💆🏿"
+}, {
+  expected: "💇🏻",
+  actual: "💇🏻"
+}, {
+  expected: "💇🏼",
+  actual: "💇🏼"
+}, {
+  expected: "💇🏽",
+  actual: "💇🏽"
+}, {
+  expected: "💇🏾",
+  actual: "💇🏾"
+}, {
+  expected: "💇🏿",
+  actual: "💇🏿"
+}, {
+  expected: "🚶🏻",
+  actual: "🚶🏻"
+}, {
+  expected: "🚶🏼",
+  actual: "🚶🏼"
+}, {
+  expected: "🚶🏽",
+  actual: "🚶🏽"
+}, {
+  expected: "🚶🏾",
+  actual: "🚶🏾"
+}, {
+  expected: "🚶🏿",
+  actual: "🚶🏿"
+}, {
+  expected: "🧍🏻",
+  actual: "🧍🏻"
+}, {
+  expected: "🧍🏼",
+  actual: "🧍🏼"
+}, {
+  expected: "🧍🏽",
+  actual: "🧍🏽"
+}, {
+  expected: "🧍🏾",
+  actual: "🧍🏾"
+}, {
+  expected: "🧍🏿",
+  actual: "🧍🏿"
+}, {
+  expected: "🧎🏻",
+  actual: "🧎🏻"
+}, {
+  expected: "🧎🏼",
+  actual: "🧎🏼"
+}, {
+  expected: "🧎🏽",
+  actual: "🧎🏽"
+}, {
+  expected: "🧎🏾",
+  actual: "🧎🏾"
+}, {
+  expected: "🧎🏿",
+  actual: "🧎🏿"
+}, {
+  expected: "🧑‍🦯",
+  actual: "🧑🦯"
+}, {
+  expected: "👨‍🦯",
+  actual: "👨🦯"
+}, {
+  expected: "👩‍🦯",
+  actual: "👩🦯"
+}, {
+  expected: "🧑‍🦼",
+  actual: "🧑🦼"
+}, {
+  expected: "👨‍🦼",
+  actual: "👨🦼"
+}, {
+  expected: "👩‍🦼",
+  actual: "👩🦼"
+}, {
+  expected: "🧑‍🦽",
+  actual: "🧑🦽"
+}, {
+  expected: "👨‍🦽",
+  actual: "👨🦽"
+}, {
+  expected: "👩‍🦽",
+  actual: "👩🦽"
+}, {
+  expected: "🏃🏻",
+  actual: "🏃🏻"
+}, {
+  expected: "🏃🏼",
+  actual: "🏃🏼"
+}, {
+  expected: "🏃🏽",
+  actual: "🏃🏽"
+}, {
+  expected: "🏃🏾",
+  actual: "🏃🏾"
+}, {
+  expected: "🏃🏿",
+  actual: "🏃🏿"
+}, {
+  expected: "💃🏻",
+  actual: "💃🏻"
+}, {
+  expected: "💃🏼",
+  actual: "💃🏼"
+}, {
+  expected: "💃🏽",
+  actual: "💃🏽"
+}, {
+  expected: "💃🏾",
+  actual: "💃🏾"
+}, {
+  expected: "💃🏿",
+  actual: "💃🏿"
+}, {
+  expected: "🕺🏻",
+  actual: "🕺🏻"
+}, {
+  expected: "🕺🏼",
+  actual: "🕺🏼"
+}, {
+  expected: "🕺🏽",
+  actual: "🕺🏽"
+}, {
+  expected: "🕺🏾",
+  actual: "🕺🏾"
+}, {
+  expected: "🕺🏿",
+  actual: "🕺🏿"
+}, {
+  expected: "🕴🏻",
+  actual: "🕴🏻"
+}, {
+  expected: "🕴🏼",
+  actual: "🕴🏼"
+}, {
+  expected: "🕴🏽",
+  actual: "🕴🏽"
+}, {
+  expected: "🕴🏾",
+  actual: "🕴🏾"
+}, {
+  expected: "🕴🏿",
+  actual: "🕴🏿"
+}, {
+  expected: "🧖🏻",
+  actual: "🧖🏻"
+}, {
+  expected: "🧖🏼",
+  actual: "🧖🏼"
+}, {
+  expected: "🧖🏽",
+  actual: "🧖🏽"
+}, {
+  expected: "🧖🏾",
+  actual: "🧖🏾"
+}, {
+  expected: "🧖🏿",
+  actual: "🧖🏿"
+}, {
+  expected: "🧗🏻",
+  actual: "🧗🏻"
+}, {
+  expected: "🧗🏼",
+  actual: "🧗🏼"
+}, {
+  expected: "🧗🏽",
+  actual: "🧗🏽"
+}, {
+  expected: "🧗🏾",
+  actual: "🧗🏾"
+}, {
+  expected: "🧗🏿",
+  actual: "🧗🏿"
+}, {
+  expected: "🏇🏻",
+  actual: "🏇🏻"
+}, {
+  expected: "🏇🏼",
+  actual: "🏇🏼"
+}, {
+  expected: "🏇🏽",
+  actual: "🏇🏽"
+}, {
+  expected: "🏇🏾",
+  actual: "🏇🏾"
+}, {
+  expected: "🏇🏿",
+  actual: "🏇🏿"
+}, {
+  expected: "🏂🏻",
+  actual: "🏂🏻"
+}, {
+  expected: "🏂🏼",
+  actual: "🏂🏼"
+}, {
+  expected: "🏂🏽",
+  actual: "🏂🏽"
+}, {
+  expected: "🏂🏾",
+  actual: "🏂🏾"
+}, {
+  expected: "🏂🏿",
+  actual: "🏂🏿"
+}, {
+  expected: "🏌🏻",
+  actual: "🏌🏻"
+}, {
+  expected: "🏌🏼",
+  actual: "🏌🏼"
+}, {
+  expected: "🏌🏽",
+  actual: "🏌🏽"
+}, {
+  expected: "🏌🏾",
+  actual: "🏌🏾"
+}, {
+  expected: "🏌🏿",
+  actual: "🏌🏿"
+}, {
+  expected: "🏄🏻",
+  actual: "🏄🏻"
+}, {
+  expected: "🏄🏼",
+  actual: "🏄🏼"
+}, {
+  expected: "🏄🏽",
+  actual: "🏄🏽"
+}, {
+  expected: "🏄🏾",
+  actual: "🏄🏾"
+}, {
+  expected: "🏄🏿",
+  actual: "🏄🏿"
+}, {
+  expected: "🚣🏻",
+  actual: "🚣🏻"
+}, {
+  expected: "🚣🏼",
+  actual: "🚣🏼"
+}, {
+  expected: "🚣🏽",
+  actual: "🚣🏽"
+}, {
+  expected: "🚣🏾",
+  actual: "🚣🏾"
+}, {
+  expected: "🚣🏿",
+  actual: "🚣🏿"
+}, {
+  expected: "🏊🏻",
+  actual: "🏊🏻"
+}, {
+  expected: "🏊🏼",
+  actual: "🏊🏼"
+}, {
+  expected: "🏊🏽",
+  actual: "🏊🏽"
+}, {
+  expected: "🏊🏾",
+  actual: "🏊🏾"
+}, {
+  expected: "🏊🏿",
+  actual: "🏊🏿"
+}, {
+  expected: "🏋🏻",
+  actual: "🏋🏻"
+}, {
+  expected: "🏋🏼",
+  actual: "🏋🏼"
+}, {
+  expected: "🏋🏽",
+  actual: "🏋🏽"
+}, {
+  expected: "🏋🏾",
+  actual: "🏋🏾"
+}, {
+  expected: "🏋🏿",
+  actual: "🏋🏿"
+}, {
+  expected: "🚴🏻",
+  actual: "🚴🏻"
+}, {
+  expected: "🚴🏼",
+  actual: "🚴🏼"
+}, {
+  expected: "🚴🏽",
+  actual: "🚴🏽"
+}, {
+  expected: "🚴🏾",
+  actual: "🚴🏾"
+}, {
+  expected: "🚴🏿",
+  actual: "🚴🏿"
+}, {
+  expected: "🚵🏻",
+  actual: "🚵🏻"
+}, {
+  expected: "🚵🏼",
+  actual: "🚵🏼"
+}, {
+  expected: "🚵🏽",
+  actual: "🚵🏽"
+}, {
+  expected: "🚵🏾",
+  actual: "🚵🏾"
+}, {
+  expected: "🚵🏿",
+  actual: "🚵🏿"
+}, {
+  expected: "🤸🏻",
+  actual: "🤸🏻"
+}, {
+  expected: "🤸🏼",
+  actual: "🤸🏼"
+}, {
+  expected: "🤸🏽",
+  actual: "🤸🏽"
+}, {
+  expected: "🤸🏾",
+  actual: "🤸🏾"
+}, {
+  expected: "🤸🏿",
+  actual: "🤸🏿"
+}, {
+  expected: "🤽🏻",
+  actual: "🤽🏻"
+}, {
+  expected: "🤽🏼",
+  actual: "🤽🏼"
+}, {
+  expected: "🤽🏽",
+  actual: "🤽🏽"
+}, {
+  expected: "🤽🏾",
+  actual: "🤽🏾"
+}, {
+  expected: "🤽🏿",
+  actual: "🤽🏿"
+}, {
+  expected: "🤾🏻",
+  actual: "🤾🏻"
+}, {
+  expected: "🤾🏼",
+  actual: "🤾🏼"
+}, {
+  expected: "🤾🏽",
+  actual: "🤾🏽"
+}, {
+  expected: "🤾🏾",
+  actual: "🤾🏾"
+}, {
+  expected: "🤾🏿",
+  actual: "🤾🏿"
+}, {
+  expected: "🤹🏻",
+  actual: "🤹🏻"
+}, {
+  expected: "🤹🏼",
+  actual: "🤹🏼"
+}, {
+  expected: "🤹🏽",
+  actual: "🤹🏽"
+}, {
+  expected: "🤹🏾",
+  actual: "🤹🏾"
+}, {
+  expected: "🤹🏿",
+  actual: "🤹🏿"
+}, {
+  expected: "🧘🏻",
+  actual: "🧘🏻"
+}, {
+  expected: "🧘🏼",
+  actual: "🧘🏼"
+}, {
+  expected: "🧘🏽",
+  actual: "🧘🏽"
+}, {
+  expected: "🧘🏾",
+  actual: "🧘🏾"
+}, {
+  expected: "🧘🏿",
+  actual: "🧘🏿"
+}, {
+  expected: "🛀🏻",
+  actual: "🛀🏻"
+}, {
+  expected: "🛀🏼",
+  actual: "🛀🏼"
+}, {
+  expected: "🛀🏽",
+  actual: "🛀🏽"
+}, {
+  expected: "🛀🏾",
+  actual: "🛀🏾"
+}, {
+  expected: "🛀🏿",
+  actual: "🛀🏿"
+}, {
+  expected: "🛌🏻",
+  actual: "🛌🏻"
+}, {
+  expected: "🛌🏼",
+  actual: "🛌🏼"
+}, {
+  expected: "🛌🏽",
+  actual: "🛌🏽"
+}, {
+  expected: "🛌🏾",
+  actual: "🛌🏾"
+}, {
+  expected: "🛌🏿",
+  actual: "🛌🏿"
+}, {
+  expected: "👭🏻",
+  actual: "👭🏻"
+}, {
+  expected: "👭🏼",
+  actual: "👭🏼"
+}, {
+  expected: "👭🏽",
+  actual: "👭🏽"
+}, {
+  expected: "👭🏾",
+  actual: "👭🏾"
+}, {
+  expected: "👭🏿",
+  actual: "👭🏿"
+}, {
+  expected: "👫🏻",
+  actual: "👫🏻"
+}, {
+  expected: "👫🏼",
+  actual: "👫🏼"
+}, {
+  expected: "👫🏽",
+  actual: "👫🏽"
+}, {
+  expected: "👫🏾",
+  actual: "👫🏾"
+}, {
+  expected: "👫🏿",
+  actual: "👫🏿"
+}, {
+  expected: "👬🏻",
+  actual: "👬🏻"
+}, {
+  expected: "👬🏼",
+  actual: "👬🏼"
+}, {
+  expected: "👬🏽",
+  actual: "👬🏽"
+}, {
+  expected: "👬🏾",
+  actual: "👬🏾"
+}, {
+  expected: "👬🏿",
+  actual: "👬🏿"
+}, {
+  expected: "💏🏻",
+  actual: "💏🏻"
+}, {
+  expected: "💏🏼",
+  actual: "💏🏼"
+}, {
+  expected: "💏🏽",
+  actual: "💏🏽"
+}, {
+  expected: "💏🏾",
+  actual: "💏🏾"
+}, {
+  expected: "💏🏿",
+  actual: "💏🏿"
+}, {
+  expected: "💑🏻",
+  actual: "💑🏻"
+}, {
+  expected: "💑🏼",
+  actual: "💑🏼"
+}, {
+  expected: "💑🏽",
+  actual: "💑🏽"
+}, {
+  expected: "💑🏾",
+  actual: "💑🏾"
+}, {
+  expected: "💑🏿",
+  actual: "💑🏿"
+}, {
+  expected: "👨‍👦",
+  actual: "👨👦"
+}, {
+  expected: "👨‍👧",
+  actual: "👨👧"
+}, {
+  expected: "👩‍👦",
+  actual: "👩👦"
+}, {
+  expected: "👩‍👧",
+  actual: "👩👧"
+}, {
+  expected: "🐕‍🦺",
+  actual: "🐕🦺"
+}, {
+  expected: "🏳️‍🌈",
+  actual: "🏳🌈"
+}, {
+  expected: "🇦🇨",
+  actual: "🇦🇨"
+}, {
+  expected: "🇦🇩",
+  actual: "🇦🇩"
+}, {
+  expected: "🇦🇪",
+  actual: "🇦🇪"
+}, {
+  expected: "🇦🇫",
+  actual: "🇦🇫"
+}, {
+  expected: "🇦🇬",
+  actual: "🇦🇬"
+}, {
+  expected: "🇦🇮",
+  actual: "🇦🇮"
+}, {
+  expected: "🇦🇱",
+  actual: "🇦🇱"
+}, {
+  expected: "🇦🇲",
+  actual: "🇦🇲"
+}, {
+  expected: "🇦🇴",
+  actual: "🇦🇴"
+}, {
+  expected: "🇦🇶",
+  actual: "🇦🇶"
+}, {
+  expected: "🇦🇷",
+  actual: "🇦🇷"
+}, {
+  expected: "🇦🇸",
+  actual: "🇦🇸"
+}, {
+  expected: "🇦🇹",
+  actual: "🇦🇹"
+}, {
+  expected: "🇦🇺",
+  actual: "🇦🇺"
+}, {
+  expected: "🇦🇼",
+  actual: "🇦🇼"
+}, {
+  expected: "🇦🇽",
+  actual: "🇦🇽"
+}, {
+  expected: "🇦🇿",
+  actual: "🇦🇿"
+}, {
+  expected: "🇧🇦",
+  actual: "🇧🇦"
+}, {
+  expected: "🇧🇧",
+  actual: "🇧🇧"
+}, {
+  expected: "🇧🇩",
+  actual: "🇧🇩"
+}, {
+  expected: "🇧🇪",
+  actual: "🇧🇪"
+}, {
+  expected: "🇧🇫",
+  actual: "🇧🇫"
+}, {
+  expected: "🇧🇬",
+  actual: "🇧🇬"
+}, {
+  expected: "🇧🇭",
+  actual: "🇧🇭"
+}, {
+  expected: "🇧🇮",
+  actual: "🇧🇮"
+}, {
+  expected: "🇧🇯",
+  actual: "🇧🇯"
+}, {
+  expected: "🇧🇱",
+  actual: "🇧🇱"
+}, {
+  expected: "🇧🇲",
+  actual: "🇧🇲"
+}, {
+  expected: "🇧🇳",
+  actual: "🇧🇳"
+}, {
+  expected: "🇧🇴",
+  actual: "🇧🇴"
+}, {
+  expected: "🇧🇶",
+  actual: "🇧🇶"
+}, {
+  expected: "🇧🇷",
+  actual: "🇧🇷"
+}, {
+  expected: "🇧🇸",
+  actual: "🇧🇸"
+}, {
+  expected: "🇧🇹",
+  actual: "🇧🇹"
+}, {
+  expected: "🇧🇻",
+  actual: "🇧🇻"
+}, {
+  expected: "🇧🇼",
+  actual: "🇧🇼"
+}, {
+  expected: "🇧🇾",
+  actual: "🇧🇾"
+}, {
+  expected: "🇧🇿",
+  actual: "🇧🇿"
+}, {
+  expected: "🇨🇦",
+  actual: "🇨🇦"
+}, {
+  expected: "🇨🇨",
+  actual: "🇨🇨"
+}, {
+  expected: "🇨🇩",
+  actual: "🇨🇩"
+}, {
+  expected: "🇨🇫",
+  actual: "🇨🇫"
+}, {
+  expected: "🇨🇬",
+  actual: "🇨🇬"
+}, {
+  expected: "🇨🇭",
+  actual: "🇨🇭"
+}, {
+  expected: "🇨🇮",
+  actual: "🇨🇮"
+}, {
+  expected: "🇨🇰",
+  actual: "🇨🇰"
+}, {
+  expected: "🇨🇱",
+  actual: "🇨🇱"
+}, {
+  expected: "🇨🇲",
+  actual: "🇨🇲"
+}, {
+  expected: "🇨🇳",
+  actual: "🇨🇳"
+}, {
+  expected: "🇨🇴",
+  actual: "🇨🇴"
+}, {
+  expected: "🇨🇵",
+  actual: "🇨🇵"
+}, {
+  expected: "🇨🇷",
+  actual: "🇨🇷"
+}, {
+  expected: "🇨🇺",
+  actual: "🇨🇺"
+}, {
+  expected: "🇨🇻",
+  actual: "🇨🇻"
+}, {
+  expected: "🇨🇼",
+  actual: "🇨🇼"
+}, {
+  expected: "🇨🇽",
+  actual: "🇨🇽"
+}, {
+  expected: "🇨🇾",
+  actual: "🇨🇾"
+}, {
+  expected: "🇨🇿",
+  actual: "🇨🇿"
+}, {
+  expected: "🇩🇪",
+  actual: "🇩🇪"
+}, {
+  expected: "🇩🇬",
+  actual: "🇩🇬"
+}, {
+  expected: "🇩🇯",
+  actual: "🇩🇯"
+}, {
+  expected: "🇩🇰",
+  actual: "🇩🇰"
+}, {
+  expected: "🇩🇲",
+  actual: "🇩🇲"
+}, {
+  expected: "🇩🇴",
+  actual: "🇩🇴"
+}, {
+  expected: "🇩🇿",
+  actual: "🇩🇿"
+}, {
+  expected: "🇪🇦",
+  actual: "🇪🇦"
+}, {
+  expected: "🇪🇨",
+  actual: "🇪🇨"
+}, {
+  expected: "🇪🇪",
+  actual: "🇪🇪"
+}, {
+  expected: "🇪🇬",
+  actual: "🇪🇬"
+}, {
+  expected: "🇪🇭",
+  actual: "🇪🇭"
+}, {
+  expected: "🇪🇷",
+  actual: "🇪🇷"
+}, {
+  expected: "🇪🇸",
+  actual: "🇪🇸"
+}, {
+  expected: "🇪🇹",
+  actual: "🇪🇹"
+}, {
+  expected: "🇪🇺",
+  actual: "🇪🇺"
+}, {
+  expected: "🇫🇮",
+  actual: "🇫🇮"
+}, {
+  expected: "🇫🇯",
+  actual: "🇫🇯"
+}, {
+  expected: "🇫🇰",
+  actual: "🇫🇰"
+}, {
+  expected: "🇫🇲",
+  actual: "🇫🇲"
+}, {
+  expected: "🇫🇴",
+  actual: "🇫🇴"
+}, {
+  expected: "🇫🇷",
+  actual: "🇫🇷"
+}, {
+  expected: "🇬🇦",
+  actual: "🇬🇦"
+}, {
+  expected: "🇬🇧",
+  actual: "🇬🇧"
+}, {
+  expected: "🇬🇩",
+  actual: "🇬🇩"
+}, {
+  expected: "🇬🇪",
+  actual: "🇬🇪"
+}, {
+  expected: "🇬🇫",
+  actual: "🇬🇫"
+}, {
+  expected: "🇬🇬",
+  actual: "🇬🇬"
+}, {
+  expected: "🇬🇭",
+  actual: "🇬🇭"
+}, {
+  expected: "🇬🇮",
+  actual: "🇬🇮"
+}, {
+  expected: "🇬🇱",
+  actual: "🇬🇱"
+}, {
+  expected: "🇬🇲",
+  actual: "🇬🇲"
+}, {
+  expected: "🇬🇳",
+  actual: "🇬🇳"
+}, {
+  expected: "🇬🇵",
+  actual: "🇬🇵"
+}, {
+  expected: "🇬🇶",
+  actual: "🇬🇶"
+}, {
+  expected: "🇬🇷",
+  actual: "🇬🇷"
+}, {
+  expected: "🇬🇸",
+  actual: "🇬🇸"
+}, {
+  expected: "🇬🇹",
+  actual: "🇬🇹"
+}, {
+  expected: "🇬🇺",
+  actual: "🇬🇺"
+}, {
+  expected: "🇬🇼",
+  actual: "🇬🇼"
+}, {
+  expected: "🇬🇾",
+  actual: "🇬🇾"
+}, {
+  expected: "🇭🇰",
+  actual: "🇭🇰"
+}, {
+  expected: "🇭🇲",
+  actual: "🇭🇲"
+}, {
+  expected: "🇭🇳",
+  actual: "🇭🇳"
+}, {
+  expected: "🇭🇷",
+  actual: "🇭🇷"
+}, {
+  expected: "🇭🇹",
+  actual: "🇭🇹"
+}, {
+  expected: "🇭🇺",
+  actual: "🇭🇺"
+}, {
+  expected: "🇮🇨",
+  actual: "🇮🇨"
+}, {
+  expected: "🇮🇩",
+  actual: "🇮🇩"
+}, {
+  expected: "🇮🇪",
+  actual: "🇮🇪"
+}, {
+  expected: "🇮🇱",
+  actual: "🇮🇱"
+}, {
+  expected: "🇮🇲",
+  actual: "🇮🇲"
+}, {
+  expected: "🇮🇳",
+  actual: "🇮🇳"
+}, {
+  expected: "🇮🇴",
+  actual: "🇮🇴"
+}, {
+  expected: "🇮🇶",
+  actual: "🇮🇶"
+}, {
+  expected: "🇮🇷",
+  actual: "🇮🇷"
+}, {
+  expected: "🇮🇸",
+  actual: "🇮🇸"
+}, {
+  expected: "🇮🇹",
+  actual: "🇮🇹"
+}, {
+  expected: "🇯🇪",
+  actual: "🇯🇪"
+}, {
+  expected: "🇯🇲",
+  actual: "🇯🇲"
+}, {
+  expected: "🇯🇴",
+  actual: "🇯🇴"
+}, {
+  expected: "🇯🇵",
+  actual: "🇯🇵"
+}, {
+  expected: "🇰🇪",
+  actual: "🇰🇪"
+}, {
+  expected: "🇰🇬",
+  actual: "🇰🇬"
+}, {
+  expected: "🇰🇭",
+  actual: "🇰🇭"
+}, {
+  expected: "🇰🇮",
+  actual: "🇰🇮"
+}, {
+  expected: "🇰🇲",
+  actual: "🇰🇲"
+}, {
+  expected: "🇰🇳",
+  actual: "🇰🇳"
+}, {
+  expected: "🇰🇵",
+  actual: "🇰🇵"
+}, {
+  expected: "🇰🇷",
+  actual: "🇰🇷"
+}, {
+  expected: "🇰🇼",
+  actual: "🇰🇼"
+}, {
+  expected: "🇰🇾",
+  actual: "🇰🇾"
+}, {
+  expected: "🇰🇿",
+  actual: "🇰🇿"
+}, {
+  expected: "🇱🇦",
+  actual: "🇱🇦"
+}, {
+  expected: "🇱🇧",
+  actual: "🇱🇧"
+}, {
+  expected: "🇱🇨",
+  actual: "🇱🇨"
+}, {
+  expected: "🇱🇮",
+  actual: "🇱🇮"
+}, {
+  expected: "🇱🇰",
+  actual: "🇱🇰"
+}, {
+  expected: "🇱🇷",
+  actual: "🇱🇷"
+}, {
+  expected: "🇱🇸",
+  actual: "🇱🇸"
+}, {
+  expected: "🇱🇹",
+  actual: "🇱🇹"
+}, {
+  expected: "🇱🇺",
+  actual: "🇱🇺"
+}, {
+  expected: "🇱🇻",
+  actual: "🇱🇻"
+}, {
+  expected: "🇱🇾",
+  actual: "🇱🇾"
+}, {
+  expected: "🇲🇦",
+  actual: "🇲🇦"
+}, {
+  expected: "🇲🇨",
+  actual: "🇲🇨"
+}, {
+  expected: "🇲🇩",
+  actual: "🇲🇩"
+}, {
+  expected: "🇲🇪",
+  actual: "🇲🇪"
+}, {
+  expected: "🇲🇫",
+  actual: "🇲🇫"
+}, {
+  expected: "🇲🇬",
+  actual: "🇲🇬"
+}, {
+  expected: "🇲🇭",
+  actual: "🇲🇭"
+}, {
+  expected: "🇲🇰",
+  actual: "🇲🇰"
+}, {
+  expected: "🇲🇱",
+  actual: "🇲🇱"
+}, {
+  expected: "🇲🇲",
+  actual: "🇲🇲"
+}, {
+  expected: "🇲🇳",
+  actual: "🇲🇳"
+}, {
+  expected: "🇲🇴",
+  actual: "🇲🇴"
+}, {
+  expected: "🇲🇵",
+  actual: "🇲🇵"
+}, {
+  expected: "🇲🇶",
+  actual: "🇲🇶"
+}, {
+  expected: "🇲🇷",
+  actual: "🇲🇷"
+}, {
+  expected: "🇲🇸",
+  actual: "🇲🇸"
+}, {
+  expected: "🇲🇹",
+  actual: "🇲🇹"
+}, {
+  expected: "🇲🇺",
+  actual: "🇲🇺"
+}, {
+  expected: "🇲🇻",
+  actual: "🇲🇻"
+}, {
+  expected: "🇲🇼",
+  actual: "🇲🇼"
+}, {
+  expected: "🇲🇽",
+  actual: "🇲🇽"
+}, {
+  expected: "🇲🇾",
+  actual: "🇲🇾"
+}, {
+  expected: "🇲🇿",
+  actual: "🇲🇿"
+}, {
+  expected: "🇳🇦",
+  actual: "🇳🇦"
+}, {
+  expected: "🇳🇨",
+  actual: "🇳🇨"
+}, {
+  expected: "🇳🇪",
+  actual: "🇳🇪"
+}, {
+  expected: "🇳🇫",
+  actual: "🇳🇫"
+}, {
+  expected: "🇳🇬",
+  actual: "🇳🇬"
+}, {
+  expected: "🇳🇮",
+  actual: "🇳🇮"
+}, {
+  expected: "🇳🇱",
+  actual: "🇳🇱"
+}, {
+  expected: "🇳🇴",
+  actual: "🇳🇴"
+}, {
+  expected: "🇳🇵",
+  actual: "🇳🇵"
+}, {
+  expected: "🇳🇷",
+  actual: "🇳🇷"
+}, {
+  expected: "🇳🇺",
+  actual: "🇳🇺"
+}, {
+  expected: "🇳🇿",
+  actual: "🇳🇿"
+}, {
+  expected: "🇴🇲",
+  actual: "🇴🇲"
+}, {
+  expected: "🇵🇦",
+  actual: "🇵🇦"
+}, {
+  expected: "🇵🇪",
+  actual: "🇵🇪"
+}, {
+  expected: "🇵🇫",
+  actual: "🇵🇫"
+}, {
+  expected: "🇵🇬",
+  actual: "🇵🇬"
+}, {
+  expected: "🇵🇭",
+  actual: "🇵🇭"
+}, {
+  expected: "🇵🇰",
+  actual: "🇵🇰"
+}, {
+  expected: "🇵🇱",
+  actual: "🇵🇱"
+}, {
+  expected: "🇵🇲",
+  actual: "🇵🇲"
+}, {
+  expected: "🇵🇳",
+  actual: "🇵🇳"
+}, {
+  expected: "🇵🇷",
+  actual: "🇵🇷"
+}, {
+  expected: "🇵🇸",
+  actual: "🇵🇸"
+}, {
+  expected: "🇵🇹",
+  actual: "🇵🇹"
+}, {
+  expected: "🇵🇼",
+  actual: "🇵🇼"
+}, {
+  expected: "🇵🇾",
+  actual: "🇵🇾"
+}, {
+  expected: "🇶🇦",
+  actual: "🇶🇦"
+}, {
+  expected: "🇷🇪",
+  actual: "🇷🇪"
+}, {
+  expected: "🇷🇴",
+  actual: "🇷🇴"
+}, {
+  expected: "🇷🇸",
+  actual: "🇷🇸"
+}, {
+  expected: "🇷🇺",
+  actual: "🇷🇺"
+}, {
+  expected: "🇷🇼",
+  actual: "🇷🇼"
+}, {
+  expected: "🇸🇦",
+  actual: "🇸🇦"
+}, {
+  expected: "🇸🇧",
+  actual: "🇸🇧"
+}, {
+  expected: "🇸🇨",
+  actual: "🇸🇨"
+}, {
+  expected: "🇸🇩",
+  actual: "🇸🇩"
+}, {
+  expected: "🇸🇪",
+  actual: "🇸🇪"
+}, {
+  expected: "🇸🇬",
+  actual: "🇸🇬"
+}, {
+  expected: "🇸🇭",
+  actual: "🇸🇭"
+}, {
+  expected: "🇸🇮",
+  actual: "🇸🇮"
+}, {
+  expected: "🇸🇯",
+  actual: "🇸🇯"
+}, {
+  expected: "🇸🇰",
+  actual: "🇸🇰"
+}, {
+  expected: "🇸🇱",
+  actual: "🇸🇱"
+}, {
+  expected: "🇸🇲",
+  actual: "🇸🇲"
+}, {
+  expected: "🇸🇳",
+  actual: "🇸🇳"
+}, {
+  expected: "🇸🇴",
+  actual: "🇸🇴"
+}, {
+  expected: "🇸🇷",
+  actual: "🇸🇷"
+}, {
+  expected: "🇸🇸",
+  actual: "🇸🇸"
+}, {
+  expected: "🇸🇹",
+  actual: "🇸🇹"
+}, {
+  expected: "🇸🇻",
+  actual: "🇸🇻"
+}, {
+  expected: "🇸🇽",
+  actual: "🇸🇽"
+}, {
+  expected: "🇸🇾",
+  actual: "🇸🇾"
+}, {
+  expected: "🇸🇿",
+  actual: "🇸🇿"
+}, {
+  expected: "🇹🇦",
+  actual: "🇹🇦"
+}, {
+  expected: "🇹🇨",
+  actual: "🇹🇨"
+}, {
+  expected: "🇹🇩",
+  actual: "🇹🇩"
+}, {
+  expected: "🇹🇫",
+  actual: "🇹🇫"
+}, {
+  expected: "🇹🇬",
+  actual: "🇹🇬"
+}, {
+  expected: "🇹🇭",
+  actual: "🇹🇭"
+}, {
+  expected: "🇹🇯",
+  actual: "🇹🇯"
+}, {
+  expected: "🇹🇰",
+  actual: "🇹🇰"
+}, {
+  expected: "🇹🇱",
+  actual: "🇹🇱"
+}, {
+  expected: "🇹🇲",
+  actual: "🇹🇲"
+}, {
+  expected: "🇹🇳",
+  actual: "🇹🇳"
+}, {
+  expected: "🇹🇴",
+  actual: "🇹🇴"
+}, {
+  expected: "🇹🇷",
+  actual: "🇹🇷"
+}, {
+  expected: "🇹🇹",
+  actual: "🇹🇹"
+}, {
+  expected: "🇹🇻",
+  actual: "🇹🇻"
+}, {
+  expected: "🇹🇼",
+  actual: "🇹🇼"
+}, {
+  expected: "🇹🇿",
+  actual: "🇹🇿"
+}, {
+  expected: "🇺🇦",
+  actual: "🇺🇦"
+}, {
+  expected: "🇺🇬",
+  actual: "🇺🇬"
+}, {
+  expected: "🇺🇲",
+  actual: "🇺🇲"
+}, {
+  expected: "🇺🇳",
+  actual: "🇺🇳"
+}, {
+  expected: "🇺🇸",
+  actual: "🇺🇸"
+}, {
+  expected: "🇺🇾",
+  actual: "🇺🇾"
+}, {
+  expected: "🇺🇿",
+  actual: "🇺🇿"
+}, {
+  expected: "🇻🇦",
+  actual: "🇻🇦"
+}, {
+  expected: "🇻🇨",
+  actual: "🇻🇨"
+}, {
+  expected: "🇻🇪",
+  actual: "🇻🇪"
+}, {
+  expected: "🇻🇬",
+  actual: "🇻🇬"
+}, {
+  expected: "🇻🇮",
+  actual: "🇻🇮"
+}, {
+  expected: "🇻🇳",
+  actual: "🇻🇳"
+}, {
+  expected: "🇻🇺",
+  actual: "🇻🇺"
+}, {
+  expected: "🇼🇫",
+  actual: "🇼🇫"
+}, {
+  expected: "🇼🇸",
+  actual: "🇼🇸"
+}, {
+  expected: "🇽🇰",
+  actual: "🇽🇰"
+}, {
+  expected: "🇾🇪",
+  actual: "🇾🇪"
+}, {
+  expected: "🇾🇹",
+  actual: "🇾🇹"
+}, {
+  expected: "🇿🇦",
+  actual: "🇿🇦"
+}, {
+  expected: "🇿🇲",
+  actual: "🇿🇲"
+}, {
+  expected: "🇿🇼",
+  actual: "🇿🇼"
+}, {
+  expected: "🍄‍🟫",
+  actual: "🍄🟫"
+}, {
+  expected: "🍋‍🟩",
+  actual: "🍋🟩"
+}, {
+  expected: "🐦‍🔥",
+  actual: "🐦🔥"
+}, {
+  expected: "🧑‍🧒",
+  actual: "🧑🧒"
+}, {
+  expected: "👉🏻",
+  actual: "👉🏻"
+}, {
+  expected: "❤️‍🔥",
+  actual: "❤🔥"
+}, {
+  expected: "❤️‍🩹",
+  actual: "❤🩹"
+}, {
+  expected: "🕳️",
+  actual: "🕳️"
+}, {
+  expected: "🗨️",
+  actual: "🗨️"
+}, {
+  expected: "🗯️",
+  actual: "🗯️"
+}, {
+  expected: "🖐️",
+  actual: "🖐️"
+}, {
+  expected: "✋🏻",
+  actual: "✋🏻"
+}, {
+  expected: "✋🏼",
+  actual: "✋🏼"
+}, {
+  expected: "✋🏽",
+  actual: "✋🏽"
+}, {
+  expected: "✋🏾",
+  actual: "✋🏾"
+}, {
+  expected: "✋🏿",
+  actual: "✋🏿"
+}, {
+  expected: "✌🏻",
+  actual: "✌🏻"
+}, {
+  expected: "✌🏼",
+  actual: "✌🏼"
+}, {
+  expected: "✌🏽",
+  actual: "✌🏽"
+}, {
+  expected: "✌🏾",
+  actual: "✌🏾"
+}, {
+  expected: "✌🏿",
+  actual: "✌🏿"
+}, {
+  expected: "☝🏻",
+  actual: "☝🏻"
+}, {
+  expected: "☝🏼",
+  actual: "☝🏼"
+}, {
+  expected: "☝🏽",
+  actual: "☝🏽"
+}, {
+  expected: "☝🏾",
+  actual: "☝🏾"
+}, {
+  expected: "☝🏿",
+  actual: "☝🏿"
+}, {
+  expected: "✊🏻",
+  actual: "✊🏻"
+}, {
+  expected: "✊🏼",
+  actual: "✊🏼"
+}, {
+  expected: "✊🏽",
+  actual: "✊🏽"
+}, {
+  expected: "✊🏾",
+  actual: "✊🏾"
+}, {
+  expected: "✊🏿",
+  actual: "✊🏿"
+}, {
+  expected: "✍🏻",
+  actual: "✍🏻"
+}, {
+  expected: "✍🏼",
+  actual: "✍🏼"
+}, {
+  expected: "✍🏽",
+  actual: "✍🏽"
+}, {
+  expected: "✍🏾",
+  actual: "✍🏾"
+}, {
+  expected: "✍🏿",
+  actual: "✍🏿"
+}, {
+  expected: "👁️",
+  actual: "👁️"
+}, {
+  expected: "🧔‍♂️",
+  actual: "🧔♂"
+}, {
+  expected: "🧔‍♀️",
+  actual: "🧔♀"
+}, {
+  expected: "👱‍♀️",
+  actual: "👱♀"
+}, {
+  expected: "👱‍♂️",
+  actual: "👱♂"
+}, {
+  expected: "🙍‍♂️",
+  actual: "🙍♂"
+}, {
+  expected: "🙍‍♀️",
+  actual: "🙍♀"
+}, {
+  expected: "🙎‍♂️",
+  actual: "🙎♂"
+}, {
+  expected: "🙎‍♀️",
+  actual: "🙎♀"
+}, {
+  expected: "🙅‍♂️",
+  actual: "🙅♂"
+}, {
+  expected: "🙅‍♀️",
+  actual: "🙅♀"
+}, {
+  expected: "🙆‍♂️",
+  actual: "🙆♂"
+}, {
+  expected: "🙆‍♀️",
+  actual: "🙆♀"
+}, {
+  expected: "💁‍♂️",
+  actual: "💁♂"
+}, {
+  expected: "💁‍♀️",
+  actual: "💁♀"
+}, {
+  expected: "🙋‍♂️",
+  actual: "🙋♂"
+}, {
+  expected: "🙋‍♀️",
+  actual: "🙋♀"
+}, {
+  expected: "🧏‍♂️",
+  actual: "🧏♂"
+}, {
+  expected: "🧏‍♀️",
+  actual: "🧏♀"
+}, {
+  expected: "🙇‍♂️",
+  actual: "🙇♂"
+}, {
+  expected: "🙇‍♀️",
+  actual: "🙇♀"
+}, {
+  expected: "🤦‍♂️",
+  actual: "🤦♂"
+}, {
+  expected: "🤦‍♀️",
+  actual: "🤦♀"
+}, {
+  expected: "🤷‍♂️",
+  actual: "🤷♂"
+}, {
+  expected: "🤷‍♀️",
+  actual: "🤷♀"
+}, {
+  expected: "🧑‍⚕️",
+  actual: "🧑⚕"
+}, {
+  expected: "👨‍⚕️",
+  actual: "👨⚕"
+}, {
+  expected: "👩‍⚕️",
+  actual: "👩⚕"
+}, {
+  expected: "🧑‍⚖️",
+  actual: "🧑⚖"
+}, {
+  expected: "👨‍⚖️",
+  actual: "👨⚖"
+}, {
+  expected: "👩‍⚖️",
+  actual: "👩⚖"
+}, {
+  expected: "🧑‍✈️",
+  actual: "🧑✈"
+}, {
+  expected: "👨‍✈️",
+  actual: "👨✈"
+}, {
+  expected: "👩‍✈️",
+  actual: "👩✈"
+}, {
+  expected: "👮‍♂️",
+  actual: "👮♂"
+}, {
+  expected: "👮‍♀️",
+  actual: "👮♀"
+}, {
+  expected: "🕵️",
+  actual: "🕵️"
+}, {
+  expected: "🕵️‍♂️",
+  actual: "🕵♂"
+}, {
+  expected: "🕵️‍♀️",
+  actual: "🕵♀"
+}, {
+  expected: "💂‍♂️",
+  actual: "💂♂"
+}, {
+  expected: "💂‍♀️",
+  actual: "💂♀"
+}, {
+  expected: "👷‍♂️",
+  actual: "👷♂"
+}, {
+  expected: "👷‍♀️",
+  actual: "👷♀"
+}, {
+  expected: "👳‍♂️",
+  actual: "👳♂"
+}, {
+  expected: "👳‍♀️",
+  actual: "👳♀"
+}, {
+  expected: "🤵‍♂️",
+  actual: "🤵♂"
+}, {
+  expected: "🤵‍♀️",
+  actual: "🤵♀"
+}, {
+  expected: "👰‍♂️",
+  actual: "👰♂"
+}, {
+  expected: "👰‍♀️",
+  actual: "👰♀"
+}, {
+  expected: "🦸‍♂️",
+  actual: "🦸♂"
+}, {
+  expected: "🦸‍♀️",
+  actual: "🦸♀"
+}, {
+  expected: "🦹‍♂️",
+  actual: "🦹♂"
+}, {
+  expected: "🦹‍♀️",
+  actual: "🦹♀"
+}, {
+  expected: "🧙‍♂️",
+  actual: "🧙♂"
+}, {
+  expected: "🧙‍♀️",
+  actual: "🧙♀"
+}, {
+  expected: "🧚‍♂️",
+  actual: "🧚♂"
+}, {
+  expected: "🧚‍♀️",
+  actual: "🧚♀"
+}, {
+  expected: "🧛‍♂️",
+  actual: "🧛♂"
+}, {
+  expected: "🧛‍♀️",
+  actual: "🧛♀"
+}, {
+  expected: "🧜‍♂️",
+  actual: "🧜♂"
+}, {
+  expected: "🧜‍♀️",
+  actual: "🧜♀"
+}, {
+  expected: "🧝‍♂️",
+  actual: "🧝♂"
+}, {
+  expected: "🧝‍♀️",
+  actual: "🧝♀"
+}, {
+  expected: "🧞‍♂️",
+  actual: "🧞♂"
+}, {
+  expected: "🧞‍♀️",
+  actual: "🧞♀"
+}, {
+  expected: "🧟‍♂️",
+  actual: "🧟♂"
+}, {
+  expected: "🧟‍♀️",
+  actual: "🧟♀"
+}, {
+  expected: "💆‍♂️",
+  actual: "💆♂"
+}, {
+  expected: "💆‍♀️",
+  actual: "💆♀"
+}, {
+  expected: "💇‍♂️",
+  actual: "💇♂"
+}, {
+  expected: "💇‍♀️",
+  actual: "💇♀"
+}, {
+  expected: "🚶‍♂️",
+  actual: "🚶♂"
+}, {
+  expected: "🚶‍♀️",
+  actual: "🚶♀"
+}, {
+  expected: "🧍‍♂️",
+  actual: "🧍♂"
+}, {
+  expected: "🧍‍♀️",
+  actual: "🧍♀"
+}, {
+  expected: "🧎‍♂️",
+  actual: "🧎♂"
+}, {
+  expected: "🧎‍♀️",
+  actual: "🧎♀"
+}, {
+  expected: "🏃‍♂️",
+  actual: "🏃♂"
+}, {
+  expected: "🏃‍♀️",
+  actual: "🏃♀"
+}, {
+  expected: "🕴️",
+  actual: "🕴️"
+}, {
+  expected: "👯‍♂️",
+  actual: "👯♂"
+}, {
+  expected: "👯‍♀️",
+  actual: "👯♀"
+}, {
+  expected: "🧖‍♂️",
+  actual: "🧖♂"
+}, {
+  expected: "🧖‍♀️",
+  actual: "🧖♀"
+}, {
+  expected: "🧗‍♂️",
+  actual: "🧗♂"
+}, {
+  expected: "🧗‍♀️",
+  actual: "🧗♀"
+}, {
+  expected: "🏌️",
+  actual: "🏌️"
+}, {
+  expected: "🏌️‍♂️",
+  actual: "🏌♂"
+}, {
+  expected: "🏌️‍♀️",
+  actual: "🏌♀"
+}, {
+  expected: "🏄‍♂️",
+  actual: "🏄♂"
+}, {
+  expected: "🏄‍♀️",
+  actual: "🏄♀"
+}, {
+  expected: "🚣‍♂️",
+  actual: "🚣♂"
+}, {
+  expected: "🚣‍♀️",
+  actual: "🚣♀"
+}, {
+  expected: "🏊‍♂️",
+  actual: "🏊♂"
+}, {
+  expected: "🏊‍♀️",
+  actual: "🏊♀"
+}, {
+  expected: "⛹🏻",
+  actual: "⛹🏻"
+}, {
+  expected: "⛹🏼",
+  actual: "⛹🏼"
+}, {
+  expected: "⛹🏽",
+  actual: "⛹🏽"
+}, {
+  expected: "⛹🏾",
+  actual: "⛹🏾"
+}, {
+  expected: "⛹🏿",
+  actual: "⛹🏿"
+}, {
+  expected: "🏋️",
+  actual: "🏋️"
+}, {
+  expected: "🏋️‍♂️",
+  actual: "🏋♂"
+}, {
+  expected: "🏋️‍♀️",
+  actual: "🏋♀"
+}, {
+  expected: "🚴‍♂️",
+  actual: "🚴♂"
+}, {
+  expected: "🚴‍♀️",
+  actual: "🚴♀"
+}, {
+  expected: "🚵‍♂️",
+  actual: "🚵♂"
+}, {
+  expected: "🚵‍♀️",
+  actual: "🚵♀"
+}, {
+  expected: "🤸‍♂️",
+  actual: "🤸♂"
+}, {
+  expected: "🤸‍♀️",
+  actual: "🤸♀"
+}, {
+  expected: "🤼‍♂️",
+  actual: "🤼♂"
+}, {
+  expected: "🤼‍♀️",
+  actual: "🤼♀"
+}, {
+  expected: "🤽‍♂️",
+  actual: "🤽♂"
+}, {
+  expected: "🤽‍♀️",
+  actual: "🤽♀"
+}, {
+  expected: "🤾‍♂️",
+  actual: "🤾♂"
+}, {
+  expected: "🤾‍♀️",
+  actual: "🤾♀"
+}, {
+  expected: "🤹‍♂️",
+  actual: "🤹♂"
+}, {
+  expected: "🤹‍♀️",
+  actual: "🤹♀"
+}, {
+  expected: "🧘‍♂️",
+  actual: "🧘♂"
+}, {
+  expected: "🧘‍♀️",
+  actual: "🧘♀"
+}, {
+  expected: "🗣️",
+  actual: "🗣️"
+}, {
+  expected: "🐈‍⬛",
+  actual: "🐈⬛"
+}, {
+  expected: "🐿️",
+  actual: "🐿️"
+}, {
+  expected: "🐻‍❄️",
+  actual: "🐻❄"
+}, {
+  expected: "🕊️",
+  actual: "🕊️"
+}, {
+  expected: "🐦‍⬛",
+  actual: "🐦⬛"
+}, {
+  expected: "🕷️",
+  actual: "🕷️"
+}, {
+  expected: "🕸️",
+  actual: "🕸️"
+}, {
+  expected: "🏵️",
+  actual: "🏵️"
+}, {
+  expected: "🌶️",
+  actual: "🌶️"
+}, {
+  expected: "🍽️",
+  actual: "🍽️"
+}, {
+  expected: "🗺️",
+  actual: "🗺️"
+}, {
+  expected: "🏔️",
+  actual: "🏔️"
+}, {
+  expected: "🏕️",
+  actual: "🏕️"
+}, {
+  expected: "🏖️",
+  actual: "🏖️"
+}, {
+  expected: "🏜️",
+  actual: "🏜️"
+}, {
+  expected: "🏝️",
+  actual: "🏝️"
+}, {
+  expected: "🏞️",
+  actual: "🏞️"
+}, {
+  expected: "🏟️",
+  actual: "🏟️"
+}, {
+  expected: "🏛️",
+  actual: "🏛️"
+}, {
+  expected: "🏗️",
+  actual: "🏗️"
+}, {
+  expected: "🏘️",
+  actual: "🏘️"
+}, {
+  expected: "🏚️",
+  actual: "🏚️"
+}, {
+  expected: "🏙️",
+  actual: "🏙️"
+}, {
+  expected: "🏎️",
+  actual: "🏎️"
+}, {
+  expected: "🏍️",
+  actual: "🏍️"
+}, {
+  expected: "🛣️",
+  actual: "🛣️"
+}, {
+  expected: "🛤️",
+  actual: "🛤️"
+}, {
+  expected: "🛢️",
+  actual: "🛢️"
+}, {
+  expected: "🛳️",
+  actual: "🛳️"
+}, {
+  expected: "🛥️",
+  actual: "🛥️"
+}, {
+  expected: "🛩️",
+  actual: "🛩️"
+}, {
+  expected: "🛰️",
+  actual: "🛰️"
+}, {
+  expected: "🛎️",
+  actual: "🛎️"
+}, {
+  expected: "🕰️",
+  actual: "🕰️"
+}, {
+  expected: "🌡️",
+  actual: "🌡️"
+}, {
+  expected: "🌤️",
+  actual: "🌤️"
+}, {
+  expected: "🌥️",
+  actual: "🌥️"
+}, {
+  expected: "🌦️",
+  actual: "🌦️"
+}, {
+  expected: "🌧️",
+  actual: "🌧️"
+}, {
+  expected: "🌨️",
+  actual: "🌨️"
+}, {
+  expected: "🌩️",
+  actual: "🌩️"
+}, {
+  expected: "🌪️",
+  actual: "🌪️"
+}, {
+  expected: "🌫️",
+  actual: "🌫️"
+}, {
+  expected: "🌬️",
+  actual: "🌬️"
+}, {
+  expected: "🎗️",
+  actual: "🎗️"
+}, {
+  expected: "🎟️",
+  actual: "🎟️"
+}, {
+  expected: "🎖️",
+  actual: "🎖️"
+}, {
+  expected: "🕹️",
+  actual: "🕹️"
+}, {
+  expected: "🖼️",
+  actual: "🖼️"
+}, {
+  expected: "🕶️",
+  actual: "🕶️"
+}, {
+  expected: "🛍️",
+  actual: "🛍️"
+}, {
+  expected: "🎙️",
+  actual: "🎙️"
+}, {
+  expected: "🎚️",
+  actual: "🎚️"
+}, {
+  expected: "🎛️",
+  actual: "🎛️"
+}, {
+  expected: "🖥️",
+  actual: "🖥️"
+}, {
+  expected: "🖨️",
+  actual: "🖨️"
+}, {
+  expected: "🖱️",
+  actual: "🖱️"
+}, {
+  expected: "🖲️",
+  actual: "🖲️"
+}, {
+  expected: "🎞️",
+  actual: "🎞️"
+}, {
+  expected: "📽️",
+  actual: "📽️"
+}, {
+  expected: "🕯️",
+  actual: "🕯️"
+}, {
+  expected: "🗞️",
+  actual: "🗞️"
+}, {
+  expected: "🏷️",
+  actual: "🏷️"
+}, {
+  expected: "🗳️",
+  actual: "🗳️"
+}, {
+  expected: "🖋️",
+  actual: "🖋️"
+}, {
+  expected: "🖊️",
+  actual: "🖊️"
+}, {
+  expected: "🖌️",
+  actual: "🖌️"
+}, {
+  expected: "🖍️",
+  actual: "🖍️"
+}, {
+  expected: "🗂️",
+  actual: "🗂️"
+}, {
+  expected: "🗒️",
+  actual: "🗒️"
+}, {
+  expected: "🗓️",
+  actual: "🗓️"
+}, {
+  expected: "🖇️",
+  actual: "🖇️"
+}, {
+  expected: "🗃️",
+  actual: "🗃️"
+}, {
+  expected: "🗄️",
+  actual: "🗄️"
+}, {
+  expected: "🗑️",
+  actual: "🗑️"
+}, {
+  expected: "🗝️",
+  actual: "🗝️"
+}, {
+  expected: "🛠️",
+  actual: "🛠️"
+}, {
+  expected: "🗡️",
+  actual: "🗡️"
+}, {
+  expected: "🛡️",
+  actual: "🛡️"
+}, {
+  expected: "🗜️",
+  actual: "🗜️"
+}, {
+  expected: "🛏️",
+  actual: "🛏️"
+}, {
+  expected: "🛋️",
+  actual: "🛋️"
+}, {
+  expected: "🕉️",
+  actual: "🕉️"
+}, {
+  expected: "#️⃣",
+  actual: "#️⃣"
+}, {
+  expected: "*️⃣",
+  actual: "*️⃣"
+}, {
+  expected: "0️⃣",
+  actual: "0️⃣"
+}, {
+  expected: "1️⃣",
+  actual: "1️⃣"
+}, {
+  expected: "2️⃣",
+  actual: "2️⃣"
+}, {
+  expected: "3️⃣",
+  actual: "3️⃣"
+}, {
+  expected: "4️⃣",
+  actual: "4️⃣"
+}, {
+  expected: "5️⃣",
+  actual: "5️⃣"
+}, {
+  expected: "6️⃣",
+  actual: "6️⃣"
+}, {
+  expected: "7️⃣",
+  actual: "7️⃣"
+}, {
+  expected: "8️⃣",
+  actual: "8️⃣"
+}, {
+  expected: "9️⃣",
+  actual: "9️⃣"
+}, {
+  expected: "🅰️",
+  actual: "🅰️"
+}, {
+  expected: "🅱️",
+  actual: "🅱️"
+}, {
+  expected: "🅾️",
+  actual: "🅾️"
+}, {
+  expected: "🅿️",
+  actual: "🅿️"
+}, {
+  expected: "🈂️",
+  actual: "🈂️"
+}, {
+  expected: "🈷️",
+  actual: "🈷️"
+}, {
+  expected: "🏳️",
+  actual: "🏳️"
+}, {
+  expected: "🏳️‍⚧️",
+  actual: "🏳⚧"
+}, {
+  expected: "🏴‍☠️",
+  actual: "🏴☠"
+}, {
+  expected: "🏃‍➡️",
+  actual: "🏃➡"
+}, {
+  expected: "🙂‍↔️",
+  actual: "🙂↔"
+}, {
+  expected: "🙂‍↕️",
+  actual: "🙂↕"
+}, {
+  expected: "🚶‍➡️",
+  actual: "🚶➡"
+}, {
+  expected: "🧎‍➡️",
+  actual: "🧎➡"
+}, {
+  expected: "⛓️‍💥",
+  actual: "⛓💥"
+}, {
+  expected: "☺️",
+  actual: "☺️"
+}, {
+  expected: "☹️",
+  actual: "☹️"
+}, {
+  expected: "☠️",
+  actual: "☠️"
+}, {
+  expected: "❣️",
+  actual: "❣️"
+}, {
+  expected: "❤️",
+  actual: "❤️"
+}, {
+  expected: "✌️",
+  actual: "✌️"
+}, {
+  expected: "☝️",
+  actual: "☝️"
+}, {
+  expected: "✍️",
+  actual: "✍️"
+}, {
+  expected: "⛷️",
+  actual: "⛷️"
+}, {
+  expected: "⛹️",
+  actual: "⛹️"
+}, {
+  expected: "⛹️‍♂️",
+  actual: "⛹♂"
+}, {
+  expected: "⛹️‍♀️",
+  actual: "⛹♀"
+}, {
+  expected: "☘️",
+  actual: "☘️"
+}, {
+  expected: "⛰️",
+  actual: "⛰️"
+}, {
+  expected: "⛩️",
+  actual: "⛩️"
+}, {
+  expected: "♨️",
+  actual: "♨️"
+}, {
+  expected: "⛴️",
+  actual: "⛴️"
+}, {
+  expected: "✈️",
+  actual: "✈️"
+}, {
+  expected: "⏱️",
+  actual: "⏱️"
+}, {
+  expected: "⏲️",
+  actual: "⏲️"
+}, {
+  expected: "☀️",
+  actual: "☀️"
+}, {
+  expected: "☁️",
+  actual: "☁️"
+}, {
+  expected: "⛈️",
+  actual: "⛈️"
+}, {
+  expected: "☂️",
+  actual: "☂️"
+}, {
+  expected: "⛱️",
+  actual: "⛱️"
+}, {
+  expected: "❄️",
+  actual: "❄️"
+}, {
+  expected: "☃️",
+  actual: "☃️"
+}, {
+  expected: "☄️",
+  actual: "☄️"
+}, {
+  expected: "⛸️",
+  actual: "⛸️"
+}, {
+  expected: "♠️",
+  actual: "♠️"
+}, {
+  expected: "♥️",
+  actual: "♥️"
+}, {
+  expected: "♦️",
+  actual: "♦️"
+}, {
+  expected: "♣️",
+  actual: "♣️"
+}, {
+  expected: "♟️",
+  actual: "♟️"
+}, {
+  expected: "⛑️",
+  actual: "⛑️"
+}, {
+  expected: "☎️",
+  actual: "☎️"
+}, {
+  expected: "⌨️",
+  actual: "⌨️"
+}, {
+  expected: "✉️",
+  actual: "✉️"
+}, {
+  expected: "✏️",
+  actual: "✏️"
+}, {
+  expected: "✒️",
+  actual: "✒️"
+}, {
+  expected: "✂️",
+  actual: "✂️"
+}, {
+  expected: "⛏️",
+  actual: "⛏️"
+}, {
+  expected: "⚒️",
+  actual: "⚒️"
+}, {
+  expected: "⚔️",
+  actual: "⚔️"
+}, {
+  expected: "⚙️",
+  actual: "⚙️"
+}, {
+  expected: "⚖️",
+  actual: "⚖️"
+}, {
+  expected: "⛓️",
+  actual: "⛓️"
+}, {
+  expected: "⚗️",
+  actual: "⚗️"
+}, {
+  expected: "⚰️",
+  actual: "⚰️"
+}, {
+  expected: "⚱️",
+  actual: "⚱️"
+}, {
+  expected: "⚠️",
+  actual: "⚠️"
+}, {
+  expected: "☢️",
+  actual: "☢️"
+}, {
+  expected: "☣️",
+  actual: "☣️"
+}, {
+  expected: "⬆️",
+  actual: "⬆️"
+}, {
+  expected: "↗️",
+  actual: "↗️"
+}, {
+  expected: "➡️",
+  actual: "➡️"
+}, {
+  expected: "↘️",
+  actual: "↘️"
+}, {
+  expected: "⬇️",
+  actual: "⬇️"
+}, {
+  expected: "↙️",
+  actual: "↙️"
+}, {
+  expected: "⬅️",
+  actual: "⬅️"
+}, {
+  expected: "↖️",
+  actual: "↖️"
+}, {
+  expected: "↕️",
+  actual: "↕️"
+}, {
+  expected: "↔️",
+  actual: "↔️"
+}, {
+  expected: "↩️",
+  actual: "↩️"
+}, {
+  expected: "↪️",
+  actual: "↪️"
+}, {
+  expected: "⤴️",
+  actual: "⤴️"
+}, {
+  expected: "⤵️",
+  actual: "⤵️"
+}, {
+  expected: "⚛️",
+  actual: "⚛️"
+}, {
+  expected: "✡️",
+  actual: "✡️"
+}, {
+  expected: "☸️",
+  actual: "☸️"
+}, {
+  expected: "☯️",
+  actual: "☯️"
+}, {
+  expected: "✝️",
+  actual: "✝️"
+}, {
+  expected: "☦️",
+  actual: "☦️"
+}, {
+  expected: "☪️",
+  actual: "☪️"
+}, {
+  expected: "☮️",
+  actual: "☮️"
+}, {
+  expected: "▶️",
+  actual: "▶️"
+}, {
+  expected: "⏭️",
+  actual: "⏭️"
+}, {
+  expected: "⏯️",
+  actual: "⏯️"
+}, {
+  expected: "◀️",
+  actual: "◀️"
+}, {
+  expected: "⏮️",
+  actual: "⏮️"
+}, {
+  expected: "⏸️",
+  actual: "⏸️"
+}, {
+  expected: "⏹️",
+  actual: "⏹️"
+}, {
+  expected: "⏺️",
+  actual: "⏺️"
+}, {
+  expected: "⏏️",
+  actual: "⏏️"
+}, {
+  expected: "♀️",
+  actual: "♀️"
+}, {
+  expected: "♂️",
+  actual: "♂️"
+}, {
+  expected: "⚧️",
+  actual: "⚧️"
+}, {
+  expected: "✖️",
+  actual: "✖️"
+}, {
+  expected: "♾️",
+  actual: "♾️"
+}, {
+  expected: "‼️",
+  actual: "‼️"
+}, {
+  expected: "⁉️",
+  actual: "⁉️"
+}, {
+  expected: "〰️",
+  actual: "〰️"
+}, {
+  expected: "⚕️",
+  actual: "⚕️"
+}, {
+  expected: "♻️",
+  actual: "♻️"
+}, {
+  expected: "⚜️",
+  actual: "⚜️"
+}, {
+  expected: "☑️",
+  actual: "☑️"
+}, {
+  expected: "✔️",
+  actual: "✔️"
+}, {
+  expected: "〽️",
+  actual: "〽️"
+}, {
+  expected: "✳️",
+  actual: "✳️"
+}, {
+  expected: "✴️",
+  actual: "✴️"
+}, {
+  expected: "❇️",
+  actual: "❇️"
+}, {
+  expected: "™️",
+  actual: "™️"
+}, {
+  expected: "ℹ️",
+  actual: "ℹ️"
+}, {
+  expected: "Ⓜ️",
+  actual: "Ⓜ️"
+}, {
+  expected: "㊗️",
+  actual: "㊗️"
+}, {
+  expected: "㊙️",
+  actual: "㊙️"
+}, {
+  expected: "◼️",
+  actual: "◼️"
+}, {
+  expected: "◻️",
+  actual: "◻️"
+}, {
+  expected: "▪️",
+  actual: "▪️"
+}, {
+  expected: "▫️",
+  actual: "▫️"
+}, {
+  expected: "©️",
+  actual: "©️"
+}, {
+  expected: "®️",
+  actual: "®️"
+}, {
+  expected: "😀",
+  actual: "😀"
+}, {
+  expected: "😃",
+  actual: "😃"
+}, {
+  expected: "😄",
+  actual: "😄"
+}, {
+  expected: "😁",
+  actual: "😁"
+}, {
+  expected: "😆",
+  actual: "😆"
+}, {
+  expected: "😅",
+  actual: "😅"
+}, {
+  expected: "🤣",
+  actual: "🤣"
+}, {
+  expected: "😂",
+  actual: "😂"
+}, {
+  expected: "🙂",
+  actual: "🙂"
+}, {
+  expected: "🙃",
+  actual: "🙃"
+}, {
+  expected: "🫠",
+  actual: "🫠"
+}, {
+  expected: "😉",
+  actual: "😉"
+}, {
+  expected: "😊",
+  actual: "😊"
+}, {
+  expected: "😇",
+  actual: "😇"
+}, {
+  expected: "🥰",
+  actual: "🥰"
+}, {
+  expected: "😍",
+  actual: "😍"
+}, {
+  expected: "🤩",
+  actual: "🤩"
+}, {
+  expected: "😘",
+  actual: "😘"
+}, {
+  expected: "😗",
+  actual: "😗"
+}, {
+  expected: "😚",
+  actual: "😚"
+}, {
+  expected: "😙",
+  actual: "😙"
+}, {
+  expected: "🥲",
+  actual: "🥲"
+}, {
+  expected: "😋",
+  actual: "😋"
+}, {
+  expected: "😛",
+  actual: "😛"
+}, {
+  expected: "😜",
+  actual: "😜"
+}, {
+  expected: "🤪",
+  actual: "🤪"
+}, {
+  expected: "😝",
+  actual: "😝"
+}, {
+  expected: "🤑",
+  actual: "🤑"
+}, {
+  expected: "🤗",
+  actual: "🤗"
+}, {
+  expected: "🤭",
+  actual: "🤭"
+}, {
+  expected: "🫢",
+  actual: "🫢"
+}, {
+  expected: "🫣",
+  actual: "🫣"
+}, {
+  expected: "🤫",
+  actual: "🤫"
+}, {
+  expected: "🤔",
+  actual: "🤔"
+}, {
+  expected: "🫡",
+  actual: "🫡"
+}, {
+  expected: "🤐",
+  actual: "🤐"
+}, {
+  expected: "🤨",
+  actual: "🤨"
+}, {
+  expected: "😐",
+  actual: "😐"
+}, {
+  expected: "😑",
+  actual: "😑"
+}, {
+  expected: "😶",
+  actual: "😶"
+}, {
+  expected: "🫥",
+  actual: "🫥"
+}, {
+  expected: "😏",
+  actual: "😏"
+}, {
+  expected: "😒",
+  actual: "😒"
+}, {
+  expected: "🙄",
+  actual: "🙄"
+}, {
+  expected: "😬",
+  actual: "😬"
+}, {
+  expected: "🤥",
+  actual: "🤥"
+}, {
+  expected: "🫨",
+  actual: "🫨"
+}, {
+  expected: "😌",
+  actual: "😌"
+}, {
+  expected: "😔",
+  actual: "😔"
+}, {
+  expected: "😪",
+  actual: "😪"
+}, {
+  expected: "🤤",
+  actual: "🤤"
+}, {
+  expected: "😴",
+  actual: "😴"
+}, {
+  expected: "😷",
+  actual: "😷"
+}, {
+  expected: "🤒",
+  actual: "🤒"
+}, {
+  expected: "🤕",
+  actual: "🤕"
+}, {
+  expected: "🤢",
+  actual: "🤢"
+}, {
+  expected: "🤮",
+  actual: "🤮"
+}, {
+  expected: "🤧",
+  actual: "🤧"
+}, {
+  expected: "🥵",
+  actual: "🥵"
+}, {
+  expected: "🥶",
+  actual: "🥶"
+}, {
+  expected: "🥴",
+  actual: "🥴"
+}, {
+  expected: "😵",
+  actual: "😵"
+}, {
+  expected: "🤯",
+  actual: "🤯"
+}, {
+  expected: "🤠",
+  actual: "🤠"
+}, {
+  expected: "🥳",
+  actual: "🥳"
+}, {
+  expected: "🥸",
+  actual: "🥸"
+}, {
+  expected: "😎",
+  actual: "😎"
+}, {
+  expected: "🤓",
+  actual: "🤓"
+}, {
+  expected: "🧐",
+  actual: "🧐"
+}, {
+  expected: "😕",
+  actual: "😕"
+}, {
+  expected: "🫤",
+  actual: "🫤"
+}, {
+  expected: "😟",
+  actual: "😟"
+}, {
+  expected: "🙁",
+  actual: "🙁"
+}, {
+  expected: "😮",
+  actual: "😮"
+}, {
+  expected: "😯",
+  actual: "😯"
+}, {
+  expected: "😲",
+  actual: "😲"
+}, {
+  expected: "😳",
+  actual: "😳"
+}, {
+  expected: "🥺",
+  actual: "🥺"
+}, {
+  expected: "🥹",
+  actual: "🥹"
+}, {
+  expected: "😦",
+  actual: "😦"
+}, {
+  expected: "😧",
+  actual: "😧"
+}, {
+  expected: "😨",
+  actual: "😨"
+}, {
+  expected: "😰",
+  actual: "😰"
+}, {
+  expected: "😥",
+  actual: "😥"
+}, {
+  expected: "😢",
+  actual: "😢"
+}, {
+  expected: "😭",
+  actual: "😭"
+}, {
+  expected: "😱",
+  actual: "😱"
+}, {
+  expected: "😖",
+  actual: "😖"
+}, {
+  expected: "😣",
+  actual: "😣"
+}, {
+  expected: "😞",
+  actual: "😞"
+}, {
+  expected: "😓",
+  actual: "😓"
+}, {
+  expected: "😩",
+  actual: "😩"
+}, {
+  expected: "😫",
+  actual: "😫"
+}, {
+  expected: "🥱",
+  actual: "🥱"
+}, {
+  expected: "😤",
+  actual: "😤"
+}, {
+  expected: "😡",
+  actual: "😡"
+}, {
+  expected: "😠",
+  actual: "😠"
+}, {
+  expected: "🤬",
+  actual: "🤬"
+}, {
+  expected: "😈",
+  actual: "😈"
+}, {
+  expected: "👿",
+  actual: "👿"
+}, {
+  expected: "💀",
+  actual: "💀"
+}, {
+  expected: "💩",
+  actual: "💩"
+}, {
+  expected: "🤡",
+  actual: "🤡"
+}, {
+  expected: "👹",
+  actual: "👹"
+}, {
+  expected: "👺",
+  actual: "👺"
+}, {
+  expected: "👻",
+  actual: "👻"
+}, {
+  expected: "👽",
+  actual: "👽"
+}, {
+  expected: "👾",
+  actual: "👾"
+}, {
+  expected: "🤖",
+  actual: "🤖"
+}, {
+  expected: "😺",
+  actual: "😺"
+}, {
+  expected: "😸",
+  actual: "😸"
+}, {
+  expected: "😹",
+  actual: "😹"
+}, {
+  expected: "😻",
+  actual: "😻"
+}, {
+  expected: "😼",
+  actual: "😼"
+}, {
+  expected: "😽",
+  actual: "😽"
+}, {
+  expected: "🙀",
+  actual: "🙀"
+}, {
+  expected: "😿",
+  actual: "😿"
+}, {
+  expected: "😾",
+  actual: "😾"
+}, {
+  expected: "🙈",
+  actual: "🙈"
+}, {
+  expected: "🙉",
+  actual: "🙉"
+}, {
+  expected: "🙊",
+  actual: "🙊"
+}, {
+  expected: "💌",
+  actual: "💌"
+}, {
+  expected: "💘",
+  actual: "💘"
+}, {
+  expected: "💝",
+  actual: "💝"
+}, {
+  expected: "💖",
+  actual: "💖"
+}, {
+  expected: "💗",
+  actual: "💗"
+}, {
+  expected: "💓",
+  actual: "💓"
+}, {
+  expected: "💞",
+  actual: "💞"
+}, {
+  expected: "💕",
+  actual: "💕"
+}, {
+  expected: "💟",
+  actual: "💟"
+}, {
+  expected: "💔",
+  actual: "💔"
+}, {
+  expected: "🩷",
+  actual: "🩷"
+}, {
+  expected: "🧡",
+  actual: "🧡"
+}, {
+  expected: "💛",
+  actual: "💛"
+}, {
+  expected: "💚",
+  actual: "💚"
+}, {
+  expected: "💙",
+  actual: "💙"
+}, {
+  expected: "🩵",
+  actual: "🩵"
+}, {
+  expected: "💜",
+  actual: "💜"
+}, {
+  expected: "🤎",
+  actual: "🤎"
+}, {
+  expected: "🖤",
+  actual: "🖤"
+}, {
+  expected: "🩶",
+  actual: "🩶"
+}, {
+  expected: "🤍",
+  actual: "🤍"
+}, {
+  expected: "💋",
+  actual: "💋"
+}, {
+  expected: "💯",
+  actual: "💯"
+}, {
+  expected: "💢",
+  actual: "💢"
+}, {
+  expected: "💥",
+  actual: "💥"
+}, {
+  expected: "💫",
+  actual: "💫"
+}, {
+  expected: "💦",
+  actual: "💦"
+}, {
+  expected: "💨",
+  actual: "💨"
+}, {
+  expected: "🕳️",
+  actual: "🕳"
+}, {
+  expected: "🕳",
+  actual: "🕳"
+}, {
+  expected: "💬",
+  actual: "💬"
+}, {
+  expected: "🗨️",
+  actual: "🗨"
+}, {
+  expected: "🗨",
+  actual: "🗨"
+}, {
+  expected: "🗯️",
+  actual: "🗯"
+}, {
+  expected: "🗯",
+  actual: "🗯"
+}, {
+  expected: "💭",
+  actual: "💭"
+}, {
+  expected: "💤",
+  actual: "💤"
+}, {
+  expected: "👋",
+  actual: "👋"
+}, {
+  expected: "🤚",
+  actual: "🤚"
+}, {
+  expected: "🖐️",
+  actual: "🖐"
+}, {
+  expected: "🖐",
+  actual: "🖐"
+}, {
+  expected: "🖖",
+  actual: "🖖"
+}, {
+  expected: "🫱",
+  actual: "🫱"
+}, {
+  expected: "🫲",
+  actual: "🫲"
+}, {
+  expected: "🫳",
+  actual: "🫳"
+}, {
+  expected: "🫴",
+  actual: "🫴"
+}, {
+  expected: "🫷",
+  actual: "🫷"
+}, {
+  expected: "🫸",
+  actual: "🫸"
+}, {
+  expected: "👌",
+  actual: "👌"
+}, {
+  expected: "🤌",
+  actual: "🤌"
+}, {
+  expected: "🤏",
+  actual: "🤏"
+}, {
+  expected: "🤞",
+  actual: "🤞"
+}, {
+  expected: "🫰",
+  actual: "🫰"
+}, {
+  expected: "🤟",
+  actual: "🤟"
+}, {
+  expected: "🤘",
+  actual: "🤘"
+}, {
+  expected: "🤙",
+  actual: "🤙"
+}, {
+  expected: "👈",
+  actual: "👈"
+}, {
+  expected: "👉",
+  actual: "👉"
+}, {
+  expected: "👆",
+  actual: "👆"
+}, {
+  expected: "🖕",
+  actual: "🖕"
+}, {
+  expected: "👇",
+  actual: "👇"
+}, {
+  expected: "🫵",
+  actual: "🫵"
+}, {
+  expected: "👍",
+  actual: "👍"
+}, {
+  expected: "👎",
+  actual: "👎"
+}, {
+  expected: "👊",
+  actual: "👊"
+}, {
+  expected: "🤛",
+  actual: "🤛"
+}, {
+  expected: "🤜",
+  actual: "🤜"
+}, {
+  expected: "👏",
+  actual: "👏"
+}, {
+  expected: "🙌",
+  actual: "🙌"
+}, {
+  expected: "🫶",
+  actual: "🫶"
+}, {
+  expected: "👐",
+  actual: "👐"
+}, {
+  expected: "🤲",
+  actual: "🤲"
+}, {
+  expected: "🤝",
+  actual: "🤝"
+}, {
+  expected: "🙏",
+  actual: "🙏"
+}, {
+  expected: "💅",
+  actual: "💅"
+}, {
+  expected: "🤳",
+  actual: "🤳"
+}, {
+  expected: "💪",
+  actual: "💪"
+}, {
+  expected: "🦾",
+  actual: "🦾"
+}, {
+  expected: "🦿",
+  actual: "🦿"
+}, {
+  expected: "🦵",
+  actual: "🦵"
+}, {
+  expected: "🦶",
+  actual: "🦶"
+}, {
+  expected: "👂",
+  actual: "👂"
+}, {
+  expected: "🦻",
+  actual: "🦻"
+}, {
+  expected: "👃",
+  actual: "👃"
+}, {
+  expected: "🧠",
+  actual: "🧠"
+}, {
+  expected: "🫀",
+  actual: "🫀"
+}, {
+  expected: "🫁",
+  actual: "🫁"
+}, {
+  expected: "🦷",
+  actual: "🦷"
+}, {
+  expected: "🦴",
+  actual: "🦴"
+}, {
+  expected: "👀",
+  actual: "👀"
+}, {
+  expected: "👁️",
+  actual: "👁"
+}, {
+  expected: "👁",
+  actual: "👁"
+}, {
+  expected: "👅",
+  actual: "👅"
+}, {
+  expected: "👄",
+  actual: "👄"
+}, {
+  expected: "🫦",
+  actual: "🫦"
+}, {
+  expected: "👶",
+  actual: "👶"
+}, {
+  expected: "🧒",
+  actual: "🧒"
+}, {
+  expected: "👦",
+  actual: "👦"
+}, {
+  expected: "👧",
+  actual: "👧"
+}, {
+  expected: "🧑",
+  actual: "🧑"
+}, {
+  expected: "👱",
+  actual: "👱"
+}, {
+  expected: "👨",
+  actual: "👨"
+}, {
+  expected: "🧔",
+  actual: "🧔"
+}, {
+  expected: "👩",
+  actual: "👩"
+}, {
+  expected: "🧓",
+  actual: "🧓"
+}, {
+  expected: "👴",
+  actual: "👴"
+}, {
+  expected: "👵",
+  actual: "👵"
+}, {
+  expected: "🙍",
+  actual: "🙍"
+}, {
+  expected: "🙎",
+  actual: "🙎"
+}, {
+  expected: "🙅",
+  actual: "🙅"
+}, {
+  expected: "🙆",
+  actual: "🙆"
+}, {
+  expected: "💁",
+  actual: "💁"
+}, {
+  expected: "🙋",
+  actual: "🙋"
+}, {
+  expected: "🧏",
+  actual: "🧏"
+}, {
+  expected: "🙇",
+  actual: "🙇"
+}, {
+  expected: "🤦",
+  actual: "🤦"
+}, {
+  expected: "🤷",
+  actual: "🤷"
+}, {
+  expected: "👮",
+  actual: "👮"
+}, {
+  expected: "🕵️",
+  actual: "🕵"
+}, {
+  expected: "🕵",
+  actual: "🕵"
+}, {
+  expected: "💂",
+  actual: "💂"
+}, {
+  expected: "🥷",
+  actual: "🥷"
+}, {
+  expected: "👷",
+  actual: "👷"
+}, {
+  expected: "🫅",
+  actual: "🫅"
+}, {
+  expected: "🤴",
+  actual: "🤴"
+}, {
+  expected: "👸",
+  actual: "👸"
+}, {
+  expected: "👳",
+  actual: "👳"
+}, {
+  expected: "👲",
+  actual: "👲"
+}, {
+  expected: "🧕",
+  actual: "🧕"
+}, {
+  expected: "🤵",
+  actual: "🤵"
+}, {
+  expected: "👰",
+  actual: "👰"
+}, {
+  expected: "🤰",
+  actual: "🤰"
+}, {
+  expected: "🫃",
+  actual: "🫃"
+}, {
+  expected: "🫄",
+  actual: "🫄"
+}, {
+  expected: "🤱",
+  actual: "🤱"
+}, {
+  expected: "👼",
+  actual: "👼"
+}, {
+  expected: "🎅",
+  actual: "🎅"
+}, {
+  expected: "🤶",
+  actual: "🤶"
+}, {
+  expected: "🦸",
+  actual: "🦸"
+}, {
+  expected: "🦹",
+  actual: "🦹"
+}, {
+  expected: "🧙",
+  actual: "🧙"
+}, {
+  expected: "🧚",
+  actual: "🧚"
+}, {
+  expected: "🧛",
+  actual: "🧛"
+}, {
+  expected: "🧜",
+  actual: "🧜"
+}, {
+  expected: "🧝",
+  actual: "🧝"
+}, {
+  expected: "🧞",
+  actual: "🧞"
+}, {
+  expected: "🧟",
+  actual: "🧟"
+}, {
+  expected: "🧌",
+  actual: "🧌"
+}, {
+  expected: "💆",
+  actual: "💆"
+}, {
+  expected: "💇",
+  actual: "💇"
+}, {
+  expected: "🚶",
+  actual: "🚶"
+}, {
+  expected: "🧍",
+  actual: "🧍"
+}, {
+  expected: "🧎",
+  actual: "🧎"
+}, {
+  expected: "🏃",
+  actual: "🏃"
+}, {
+  expected: "💃",
+  actual: "💃"
+}, {
+  expected: "🕺",
+  actual: "🕺"
+}, {
+  expected: "🕴️",
+  actual: "🕴"
+}, {
+  expected: "🕴",
+  actual: "🕴"
+}, {
+  expected: "👯",
+  actual: "👯"
+}, {
+  expected: "🧖",
+  actual: "🧖"
+}, {
+  expected: "🧗",
+  actual: "🧗"
+}, {
+  expected: "🤺",
+  actual: "🤺"
+}, {
+  expected: "🏇",
+  actual: "🏇"
+}, {
+  expected: "🏂",
+  actual: "🏂"
+}, {
+  expected: "🏌️",
+  actual: "🏌"
+}, {
+  expected: "🏌",
+  actual: "🏌"
+}, {
+  expected: "🏄",
+  actual: "🏄"
+}, {
+  expected: "🚣",
+  actual: "🚣"
+}, {
+  expected: "🏊",
+  actual: "🏊"
+}, {
+  expected: "🏋️",
+  actual: "🏋"
+}, {
+  expected: "🏋",
+  actual: "🏋"
+}, {
+  expected: "🚴",
+  actual: "🚴"
+}, {
+  expected: "🚵",
+  actual: "🚵"
+}, {
+  expected: "🤸",
+  actual: "🤸"
+}, {
+  expected: "🤼",
+  actual: "🤼"
+}, {
+  expected: "🤽",
+  actual: "🤽"
+}, {
+  expected: "🤾",
+  actual: "🤾"
+}, {
+  expected: "🤹",
+  actual: "🤹"
+}, {
+  expected: "🧘",
+  actual: "🧘"
+}, {
+  expected: "🛀",
+  actual: "🛀"
+}, {
+  expected: "🛌",
+  actual: "🛌"
+}, {
+  expected: "👭",
+  actual: "👭"
+}, {
+  expected: "👫",
+  actual: "👫"
+}, {
+  expected: "👬",
+  actual: "👬"
+}, {
+  expected: "💏",
+  actual: "💏"
+}, {
+  expected: "💑",
+  actual: "💑"
+}, {
+  expected: "👪",
+  actual: "👪"
+}, {
+  expected: "🗣️",
+  actual: "🗣"
+}, {
+  expected: "🗣",
+  actual: "🗣"
+}, {
+  expected: "👤",
+  actual: "👤"
+}, {
+  expected: "👥",
+  actual: "👥"
+}, {
+  expected: "🫂",
+  actual: "🫂"
+}, {
+  expected: "👣",
+  actual: "👣"
+}, {
+  expected: "🐵",
+  actual: "🐵"
+}, {
+  expected: "🐒",
+  actual: "🐒"
+}, {
+  expected: "🦍",
+  actual: "🦍"
+}, {
+  expected: "🦧",
+  actual: "🦧"
+}, {
+  expected: "🐶",
+  actual: "🐶"
+}, {
+  expected: "🐕",
+  actual: "🐕"
+}, {
+  expected: "🦮",
+  actual: "🦮"
+}, {
+  expected: "🐩",
+  actual: "🐩"
+}, {
+  expected: "🐺",
+  actual: "🐺"
+}, {
+  expected: "🦊",
+  actual: "🦊"
+}, {
+  expected: "🦝",
+  actual: "🦝"
+}, {
+  expected: "🐱",
+  actual: "🐱"
+}, {
+  expected: "🐈",
+  actual: "🐈"
+}, {
+  expected: "🦁",
+  actual: "🦁"
+}, {
+  expected: "🐯",
+  actual: "🐯"
+}, {
+  expected: "🐅",
+  actual: "🐅"
+}, {
+  expected: "🐆",
+  actual: "🐆"
+}, {
+  expected: "🐴",
+  actual: "🐴"
+}, {
+  expected: "🫎",
+  actual: "🫎"
+}, {
+  expected: "🫏",
+  actual: "🫏"
+}, {
+  expected: "🐎",
+  actual: "🐎"
+}, {
+  expected: "🦄",
+  actual: "🦄"
+}, {
+  expected: "🦓",
+  actual: "🦓"
+}, {
+  expected: "🦌",
+  actual: "🦌"
+}, {
+  expected: "🦬",
+  actual: "🦬"
+}, {
+  expected: "🐮",
+  actual: "🐮"
+}, {
+  expected: "🐂",
+  actual: "🐂"
+}, {
+  expected: "🐃",
+  actual: "🐃"
+}, {
+  expected: "🐄",
+  actual: "🐄"
+}, {
+  expected: "🐷",
+  actual: "🐷"
+}, {
+  expected: "🐖",
+  actual: "🐖"
+}, {
+  expected: "🐗",
+  actual: "🐗"
+}, {
+  expected: "🐽",
+  actual: "🐽"
+}, {
+  expected: "🐏",
+  actual: "🐏"
+}, {
+  expected: "🐑",
+  actual: "🐑"
+}, {
+  expected: "🐐",
+  actual: "🐐"
+}, {
+  expected: "🐪",
+  actual: "🐪"
+}, {
+  expected: "🐫",
+  actual: "🐫"
+}, {
+  expected: "🦙",
+  actual: "🦙"
+}, {
+  expected: "🦒",
+  actual: "🦒"
+}, {
+  expected: "🐘",
+  actual: "🐘"
+}, {
+  expected: "🦣",
+  actual: "🦣"
+}, {
+  expected: "🦏",
+  actual: "🦏"
+}, {
+  expected: "🦛",
+  actual: "🦛"
+}, {
+  expected: "🐭",
+  actual: "🐭"
+}, {
+  expected: "🐁",
+  actual: "🐁"
+}, {
+  expected: "🐀",
+  actual: "🐀"
+}, {
+  expected: "🐹",
+  actual: "🐹"
+}, {
+  expected: "🐰",
+  actual: "🐰"
+}, {
+  expected: "🐇",
+  actual: "🐇"
+}, {
+  expected: "🐿️",
+  actual: "🐿"
+}, {
+  expected: "🐿",
+  actual: "🐿"
+}, {
+  expected: "🦫",
+  actual: "🦫"
+}, {
+  expected: "🦔",
+  actual: "🦔"
+}, {
+  expected: "🦇",
+  actual: "🦇"
+}, {
+  expected: "🐻",
+  actual: "🐻"
+}, {
+  expected: "🐨",
+  actual: "🐨"
+}, {
+  expected: "🐼",
+  actual: "🐼"
+}, {
+  expected: "🦥",
+  actual: "🦥"
+}, {
+  expected: "🦦",
+  actual: "🦦"
+}, {
+  expected: "🦨",
+  actual: "🦨"
+}, {
+  expected: "🦘",
+  actual: "🦘"
+}, {
+  expected: "🦡",
+  actual: "🦡"
+}, {
+  expected: "🐾",
+  actual: "🐾"
+}, {
+  expected: "🦃",
+  actual: "🦃"
+}, {
+  expected: "🐔",
+  actual: "🐔"
+}, {
+  expected: "🐓",
+  actual: "🐓"
+}, {
+  expected: "🐣",
+  actual: "🐣"
+}, {
+  expected: "🐤",
+  actual: "🐤"
+}, {
+  expected: "🐥",
+  actual: "🐥"
+}, {
+  expected: "🐦",
+  actual: "🐦"
+}, {
+  expected: "🐧",
+  actual: "🐧"
+}, {
+  expected: "🕊️",
+  actual: "🕊"
+}, {
+  expected: "🕊",
+  actual: "🕊"
+}, {
+  expected: "🦅",
+  actual: "🦅"
+}, {
+  expected: "🦆",
+  actual: "🦆"
+}, {
+  expected: "🦢",
+  actual: "🦢"
+}, {
+  expected: "🦉",
+  actual: "🦉"
+}, {
+  expected: "🦤",
+  actual: "🦤"
+}, {
+  expected: "🪶",
+  actual: "🪶"
+}, {
+  expected: "🦩",
+  actual: "🦩"
+}, {
+  expected: "🦚",
+  actual: "🦚"
+}, {
+  expected: "🦜",
+  actual: "🦜"
+}, {
+  expected: "🪽",
+  actual: "🪽"
+}, {
+  expected: "🪿",
+  actual: "🪿"
+}, {
+  expected: "🐸",
+  actual: "🐸"
+}, {
+  expected: "🐊",
+  actual: "🐊"
+}, {
+  expected: "🐢",
+  actual: "🐢"
+}, {
+  expected: "🦎",
+  actual: "🦎"
+}, {
+  expected: "🐍",
+  actual: "🐍"
+}, {
+  expected: "🐲",
+  actual: "🐲"
+}, {
+  expected: "🐉",
+  actual: "🐉"
+}, {
+  expected: "🦕",
+  actual: "🦕"
+}, {
+  expected: "🦖",
+  actual: "🦖"
+}, {
+  expected: "🐳",
+  actual: "🐳"
+}, {
+  expected: "🐋",
+  actual: "🐋"
+}, {
+  expected: "🐬",
+  actual: "🐬"
+}, {
+  expected: "🦭",
+  actual: "🦭"
+}, {
+  expected: "🐟",
+  actual: "🐟"
+}, {
+  expected: "🐠",
+  actual: "🐠"
+}, {
+  expected: "🐡",
+  actual: "🐡"
+}, {
+  expected: "🦈",
+  actual: "🦈"
+}, {
+  expected: "🐙",
+  actual: "🐙"
+}, {
+  expected: "🐚",
+  actual: "🐚"
+}, {
+  expected: "🪸",
+  actual: "🪸"
+}, {
+  expected: "🪼",
+  actual: "🪼"
+}, {
+  expected: "🐌",
+  actual: "🐌"
+}, {
+  expected: "🦋",
+  actual: "🦋"
+}, {
+  expected: "🐛",
+  actual: "🐛"
+}, {
+  expected: "🐜",
+  actual: "🐜"
+}, {
+  expected: "🐝",
+  actual: "🐝"
+}, {
+  expected: "🪲",
+  actual: "🪲"
+}, {
+  expected: "🐞",
+  actual: "🐞"
+}, {
+  expected: "🦗",
+  actual: "🦗"
+}, {
+  expected: "🪳",
+  actual: "🪳"
+}, {
+  expected: "🕷️",
+  actual: "🕷"
+}, {
+  expected: "🕷",
+  actual: "🕷"
+}, {
+  expected: "🕸️",
+  actual: "🕸"
+}, {
+  expected: "🕸",
+  actual: "🕸"
+}, {
+  expected: "🦂",
+  actual: "🦂"
+}, {
+  expected: "🦟",
+  actual: "🦟"
+}, {
+  expected: "🪰",
+  actual: "🪰"
+}, {
+  expected: "🪱",
+  actual: "🪱"
+}, {
+  expected: "🦠",
+  actual: "🦠"
+}, {
+  expected: "💐",
+  actual: "💐"
+}, {
+  expected: "🌸",
+  actual: "🌸"
+}, {
+  expected: "💮",
+  actual: "💮"
+}, {
+  expected: "🪷",
+  actual: "🪷"
+}, {
+  expected: "🏵️",
+  actual: "🏵"
+}, {
+  expected: "🏵",
+  actual: "🏵"
+}, {
+  expected: "🌹",
+  actual: "🌹"
+}, {
+  expected: "🥀",
+  actual: "🥀"
+}, {
+  expected: "🌺",
+  actual: "🌺"
+}, {
+  expected: "🌻",
+  actual: "🌻"
+}, {
+  expected: "🌼",
+  actual: "🌼"
+}, {
+  expected: "🌷",
+  actual: "🌷"
+}, {
+  expected: "🪻",
+  actual: "🪻"
+}, {
+  expected: "🌱",
+  actual: "🌱"
+}, {
+  expected: "🪴",
+  actual: "🪴"
+}, {
+  expected: "🌲",
+  actual: "🌲"
+}, {
+  expected: "🌳",
+  actual: "🌳"
+}, {
+  expected: "🌴",
+  actual: "🌴"
+}, {
+  expected: "🌵",
+  actual: "🌵"
+}, {
+  expected: "🌾",
+  actual: "🌾"
+}, {
+  expected: "🌿",
+  actual: "🌿"
+}, {
+  expected: "🍀",
+  actual: "🍀"
+}, {
+  expected: "🍁",
+  actual: "🍁"
+}, {
+  expected: "🍂",
+  actual: "🍂"
+}, {
+  expected: "🍃",
+  actual: "🍃"
+}, {
+  expected: "🪹",
+  actual: "🪹"
+}, {
+  expected: "🪺",
+  actual: "🪺"
+}, {
+  expected: "🍄",
+  actual: "🍄"
+}, {
+  expected: "🍇",
+  actual: "🍇"
+}, {
+  expected: "🍈",
+  actual: "🍈"
+}, {
+  expected: "🍉",
+  actual: "🍉"
+}, {
+  expected: "🍊",
+  actual: "🍊"
+}, {
+  expected: "🍋",
+  actual: "🍋"
+}, {
+  expected: "🍌",
+  actual: "🍌"
+}, {
+  expected: "🍍",
+  actual: "🍍"
+}, {
+  expected: "🥭",
+  actual: "🥭"
+}, {
+  expected: "🍎",
+  actual: "🍎"
+}, {
+  expected: "🍏",
+  actual: "🍏"
+}, {
+  expected: "🍐",
+  actual: "🍐"
+}, {
+  expected: "🍑",
+  actual: "🍑"
+}, {
+  expected: "🍒",
+  actual: "🍒"
+}, {
+  expected: "🍓",
+  actual: "🍓"
+}, {
+  expected: "🫐",
+  actual: "🫐"
+}, {
+  expected: "🥝",
+  actual: "🥝"
+}, {
+  expected: "🍅",
+  actual: "🍅"
+}, {
+  expected: "🫒",
+  actual: "🫒"
+}, {
+  expected: "🥥",
+  actual: "🥥"
+}, {
+  expected: "🥑",
+  actual: "🥑"
+}, {
+  expected: "🍆",
+  actual: "🍆"
+}, {
+  expected: "🥔",
+  actual: "🥔"
+}, {
+  expected: "🥕",
+  actual: "🥕"
+}, {
+  expected: "🌽",
+  actual: "🌽"
+}, {
+  expected: "🌶️",
+  actual: "🌶"
+}, {
+  expected: "🌶",
+  actual: "🌶"
+}, {
+  expected: "🫑",
+  actual: "🫑"
+}, {
+  expected: "🥒",
+  actual: "🥒"
+}, {
+  expected: "🥬",
+  actual: "🥬"
+}, {
+  expected: "🥦",
+  actual: "🥦"
+}, {
+  expected: "🧄",
+  actual: "🧄"
+}, {
+  expected: "🧅",
+  actual: "🧅"
+}, {
+  expected: "🥜",
+  actual: "🥜"
+}, {
+  expected: "🫘",
+  actual: "🫘"
+}, {
+  expected: "🌰",
+  actual: "🌰"
+}, {
+  expected: "🫚",
+  actual: "🫚"
+}, {
+  expected: "🫛",
+  actual: "🫛"
+}, {
+  expected: "🍞",
+  actual: "🍞"
+}, {
+  expected: "🥐",
+  actual: "🥐"
+}, {
+  expected: "🥖",
+  actual: "🥖"
+}, {
+  expected: "🫓",
+  actual: "🫓"
+}, {
+  expected: "🥨",
+  actual: "🥨"
+}, {
+  expected: "🥯",
+  actual: "🥯"
+}, {
+  expected: "🥞",
+  actual: "🥞"
+}, {
+  expected: "🧇",
+  actual: "🧇"
+}, {
+  expected: "🧀",
+  actual: "🧀"
+}, {
+  expected: "🍖",
+  actual: "🍖"
+}, {
+  expected: "🍗",
+  actual: "🍗"
+}, {
+  expected: "🥩",
+  actual: "🥩"
+}, {
+  expected: "🥓",
+  actual: "🥓"
+}, {
+  expected: "🍔",
+  actual: "🍔"
+}, {
+  expected: "🍟",
+  actual: "🍟"
+}, {
+  expected: "🍕",
+  actual: "🍕"
+}, {
+  expected: "🌭",
+  actual: "🌭"
+}, {
+  expected: "🥪",
+  actual: "🥪"
+}, {
+  expected: "🌮",
+  actual: "🌮"
+}, {
+  expected: "🌯",
+  actual: "🌯"
+}, {
+  expected: "🫔",
+  actual: "🫔"
+}, {
+  expected: "🥙",
+  actual: "🥙"
+}, {
+  expected: "🧆",
+  actual: "🧆"
+}, {
+  expected: "🥚",
+  actual: "🥚"
+}, {
+  expected: "🍳",
+  actual: "🍳"
+}, {
+  expected: "🥘",
+  actual: "🥘"
+}, {
+  expected: "🍲",
+  actual: "🍲"
+}, {
+  expected: "🫕",
+  actual: "🫕"
+}, {
+  expected: "🥣",
+  actual: "🥣"
+}, {
+  expected: "🥗",
+  actual: "🥗"
+}, {
+  expected: "🍿",
+  actual: "🍿"
+}, {
+  expected: "🧈",
+  actual: "🧈"
+}, {
+  expected: "🧂",
+  actual: "🧂"
+}, {
+  expected: "🥫",
+  actual: "🥫"
+}, {
+  expected: "🍱",
+  actual: "🍱"
+}, {
+  expected: "🍘",
+  actual: "🍘"
+}, {
+  expected: "🍙",
+  actual: "🍙"
+}, {
+  expected: "🍚",
+  actual: "🍚"
+}, {
+  expected: "🍛",
+  actual: "🍛"
+}, {
+  expected: "🍜",
+  actual: "🍜"
+}, {
+  expected: "🍝",
+  actual: "🍝"
+}, {
+  expected: "🍠",
+  actual: "🍠"
+}, {
+  expected: "🍢",
+  actual: "🍢"
+}, {
+  expected: "🍣",
+  actual: "🍣"
+}, {
+  expected: "🍤",
+  actual: "🍤"
+}, {
+  expected: "🍥",
+  actual: "🍥"
+}, {
+  expected: "🥮",
+  actual: "🥮"
+}, {
+  expected: "🍡",
+  actual: "🍡"
+}, {
+  expected: "🥟",
+  actual: "🥟"
+}, {
+  expected: "🥠",
+  actual: "🥠"
+}, {
+  expected: "🥡",
+  actual: "🥡"
+}, {
+  expected: "🦀",
+  actual: "🦀"
+}, {
+  expected: "🦞",
+  actual: "🦞"
+}, {
+  expected: "🦐",
+  actual: "🦐"
+}, {
+  expected: "🦑",
+  actual: "🦑"
+}, {
+  expected: "🦪",
+  actual: "🦪"
+}, {
+  expected: "🍦",
+  actual: "🍦"
+}, {
+  expected: "🍧",
+  actual: "🍧"
+}, {
+  expected: "🍨",
+  actual: "🍨"
+}, {
+  expected: "🍩",
+  actual: "🍩"
+}, {
+  expected: "🍪",
+  actual: "🍪"
+}, {
+  expected: "🎂",
+  actual: "🎂"
+}, {
+  expected: "🍰",
+  actual: "🍰"
+}, {
+  expected: "🧁",
+  actual: "🧁"
+}, {
+  expected: "🥧",
+  actual: "🥧"
+}, {
+  expected: "🍫",
+  actual: "🍫"
+}, {
+  expected: "🍬",
+  actual: "🍬"
+}, {
+  expected: "🍭",
+  actual: "🍭"
+}, {
+  expected: "🍮",
+  actual: "🍮"
+}, {
+  expected: "🍯",
+  actual: "🍯"
+}, {
+  expected: "🍼",
+  actual: "🍼"
+}, {
+  expected: "🥛",
+  actual: "🥛"
+}, {
+  expected: "🫖",
+  actual: "🫖"
+}, {
+  expected: "🍵",
+  actual: "🍵"
+}, {
+  expected: "🍶",
+  actual: "🍶"
+}, {
+  expected: "🍾",
+  actual: "🍾"
+}, {
+  expected: "🍷",
+  actual: "🍷"
+}, {
+  expected: "🍸",
+  actual: "🍸"
+}, {
+  expected: "🍹",
+  actual: "🍹"
+}, {
+  expected: "🍺",
+  actual: "🍺"
+}, {
+  expected: "🍻",
+  actual: "🍻"
+}, {
+  expected: "🥂",
+  actual: "🥂"
+}, {
+  expected: "🥃",
+  actual: "🥃"
+}, {
+  expected: "🫗",
+  actual: "🫗"
+}, {
+  expected: "🥤",
+  actual: "🥤"
+}, {
+  expected: "🧋",
+  actual: "🧋"
+}, {
+  expected: "🧃",
+  actual: "🧃"
+}, {
+  expected: "🧉",
+  actual: "🧉"
+}, {
+  expected: "🧊",
+  actual: "🧊"
+}, {
+  expected: "🥢",
+  actual: "🥢"
+}, {
+  expected: "🍽️",
+  actual: "🍽"
+}, {
+  expected: "🍽",
+  actual: "🍽"
+}, {
+  expected: "🍴",
+  actual: "🍴"
+}, {
+  expected: "🥄",
+  actual: "🥄"
+}, {
+  expected: "🔪",
+  actual: "🔪"
+}, {
+  expected: "🫙",
+  actual: "🫙"
+}, {
+  expected: "🏺",
+  actual: "🏺"
+}, {
+  expected: "🌍",
+  actual: "🌍"
+}, {
+  expected: "🌎",
+  actual: "🌎"
+}, {
+  expected: "🌏",
+  actual: "🌏"
+}, {
+  expected: "🌐",
+  actual: "🌐"
+}, {
+  expected: "🗺️",
+  actual: "🗺"
+}, {
+  expected: "🗺",
+  actual: "🗺"
+}, {
+  expected: "🗾",
+  actual: "🗾"
+}, {
+  expected: "🧭",
+  actual: "🧭"
+}, {
+  expected: "🏔️",
+  actual: "🏔"
+}, {
+  expected: "🏔",
+  actual: "🏔"
+}, {
+  expected: "🌋",
+  actual: "🌋"
+}, {
+  expected: "🗻",
+  actual: "🗻"
+}, {
+  expected: "🏕️",
+  actual: "🏕"
+}, {
+  expected: "🏕",
+  actual: "🏕"
+}, {
+  expected: "🏖️",
+  actual: "🏖"
+}, {
+  expected: "🏖",
+  actual: "🏖"
+}, {
+  expected: "🏜️",
+  actual: "🏜"
+}, {
+  expected: "🏜",
+  actual: "🏜"
+}, {
+  expected: "🏝️",
+  actual: "🏝"
+}, {
+  expected: "🏝",
+  actual: "🏝"
+}, {
+  expected: "🏞️",
+  actual: "🏞"
+}, {
+  expected: "🏞",
+  actual: "🏞"
+}, {
+  expected: "🏟️",
+  actual: "🏟"
+}, {
+  expected: "🏟",
+  actual: "🏟"
+}, {
+  expected: "🏛️",
+  actual: "🏛"
+}, {
+  expected: "🏛",
+  actual: "🏛"
+}, {
+  expected: "🏗️",
+  actual: "🏗"
+}, {
+  expected: "🏗",
+  actual: "🏗"
+}, {
+  expected: "🧱",
+  actual: "🧱"
+}, {
+  expected: "🪨",
+  actual: "🪨"
+}, {
+  expected: "🪵",
+  actual: "🪵"
+}, {
+  expected: "🛖",
+  actual: "🛖"
+}, {
+  expected: "🏘️",
+  actual: "🏘"
+}, {
+  expected: "🏘",
+  actual: "🏘"
+}, {
+  expected: "🏚️",
+  actual: "🏚"
+}, {
+  expected: "🏚",
+  actual: "🏚"
+}, {
+  expected: "🏠",
+  actual: "🏠"
+}, {
+  expected: "🏡",
+  actual: "🏡"
+}, {
+  expected: "🏢",
+  actual: "🏢"
+}, {
+  expected: "🏣",
+  actual: "🏣"
+}, {
+  expected: "🏤",
+  actual: "🏤"
+}, {
+  expected: "🏥",
+  actual: "🏥"
+}, {
+  expected: "🏦",
+  actual: "🏦"
+}, {
+  expected: "🏨",
+  actual: "🏨"
+}, {
+  expected: "🏩",
+  actual: "🏩"
+}, {
+  expected: "🏪",
+  actual: "🏪"
+}, {
+  expected: "🏫",
+  actual: "🏫"
+}, {
+  expected: "🏬",
+  actual: "🏬"
+}, {
+  expected: "🏭",
+  actual: "🏭"
+}, {
+  expected: "🏯",
+  actual: "🏯"
+}, {
+  expected: "🏰",
+  actual: "🏰"
+}, {
+  expected: "💒",
+  actual: "💒"
+}, {
+  expected: "🗼",
+  actual: "🗼"
+}, {
+  expected: "🗽",
+  actual: "🗽"
+}, {
+  expected: "🕌",
+  actual: "🕌"
+}, {
+  expected: "🛕",
+  actual: "🛕"
+}, {
+  expected: "🕍",
+  actual: "🕍"
+}, {
+  expected: "🕋",
+  actual: "🕋"
+}, {
+  expected: "🌁",
+  actual: "🌁"
+}, {
+  expected: "🌃",
+  actual: "🌃"
+}, {
+  expected: "🏙️",
+  actual: "🏙"
+}, {
+  expected: "🏙",
+  actual: "🏙"
+}, {
+  expected: "🌄",
+  actual: "🌄"
+}, {
+  expected: "🌅",
+  actual: "🌅"
+}, {
+  expected: "🌆",
+  actual: "🌆"
+}, {
+  expected: "🌇",
+  actual: "🌇"
+}, {
+  expected: "🌉",
+  actual: "🌉"
+}, {
+  expected: "🎠",
+  actual: "🎠"
+}, {
+  expected: "🛝",
+  actual: "🛝"
+}, {
+  expected: "🎡",
+  actual: "🎡"
+}, {
+  expected: "🎢",
+  actual: "🎢"
+}, {
+  expected: "💈",
+  actual: "💈"
+}, {
+  expected: "🎪",
+  actual: "🎪"
+}, {
+  expected: "🚂",
+  actual: "🚂"
+}, {
+  expected: "🚃",
+  actual: "🚃"
+}, {
+  expected: "🚄",
+  actual: "🚄"
+}, {
+  expected: "🚅",
+  actual: "🚅"
+}, {
+  expected: "🚆",
+  actual: "🚆"
+}, {
+  expected: "🚇",
+  actual: "🚇"
+}, {
+  expected: "🚈",
+  actual: "🚈"
+}, {
+  expected: "🚉",
+  actual: "🚉"
+}, {
+  expected: "🚊",
+  actual: "🚊"
+}, {
+  expected: "🚝",
+  actual: "🚝"
+}, {
+  expected: "🚞",
+  actual: "🚞"
+}, {
+  expected: "🚋",
+  actual: "🚋"
+}, {
+  expected: "🚌",
+  actual: "🚌"
+}, {
+  expected: "🚍",
+  actual: "🚍"
+}, {
+  expected: "🚎",
+  actual: "🚎"
+}, {
+  expected: "🚐",
+  actual: "🚐"
+}, {
+  expected: "🚑",
+  actual: "🚑"
+}, {
+  expected: "🚒",
+  actual: "🚒"
+}, {
+  expected: "🚓",
+  actual: "🚓"
+}, {
+  expected: "🚔",
+  actual: "🚔"
+}, {
+  expected: "🚕",
+  actual: "🚕"
+}, {
+  expected: "🚖",
+  actual: "🚖"
+}, {
+  expected: "🚗",
+  actual: "🚗"
+}, {
+  expected: "🚘",
+  actual: "🚘"
+}, {
+  expected: "🚙",
+  actual: "🚙"
+}, {
+  expected: "🛻",
+  actual: "🛻"
+}, {
+  expected: "🚚",
+  actual: "🚚"
+}, {
+  expected: "🚛",
+  actual: "🚛"
+}, {
+  expected: "🚜",
+  actual: "🚜"
+}, {
+  expected: "🏎️",
+  actual: "🏎"
+}, {
+  expected: "🏎",
+  actual: "🏎"
+}, {
+  expected: "🏍️",
+  actual: "🏍"
+}, {
+  expected: "🏍",
+  actual: "🏍"
+}, {
+  expected: "🛵",
+  actual: "🛵"
+}, {
+  expected: "🦽",
+  actual: "🦽"
+}, {
+  expected: "🦼",
+  actual: "🦼"
+}, {
+  expected: "🛺",
+  actual: "🛺"
+}, {
+  expected: "🚲",
+  actual: "🚲"
+}, {
+  expected: "🛴",
+  actual: "🛴"
+}, {
+  expected: "🛹",
+  actual: "🛹"
+}, {
+  expected: "🛼",
+  actual: "🛼"
+}, {
+  expected: "🚏",
+  actual: "🚏"
+}, {
+  expected: "🛣️",
+  actual: "🛣"
+}, {
+  expected: "🛣",
+  actual: "🛣"
+}, {
+  expected: "🛤️",
+  actual: "🛤"
+}, {
+  expected: "🛤",
+  actual: "🛤"
+}, {
+  expected: "🛢️",
+  actual: "🛢"
+}, {
+  expected: "🛢",
+  actual: "🛢"
+}, {
+  expected: "🛞",
+  actual: "🛞"
+}, {
+  expected: "🚨",
+  actual: "🚨"
+}, {
+  expected: "🚥",
+  actual: "🚥"
+}, {
+  expected: "🚦",
+  actual: "🚦"
+}, {
+  expected: "🛑",
+  actual: "🛑"
+}, {
+  expected: "🚧",
+  actual: "🚧"
+}, {
+  expected: "🛟",
+  actual: "🛟"
+}, {
+  expected: "🛶",
+  actual: "🛶"
+}, {
+  expected: "🚤",
+  actual: "🚤"
+}, {
+  expected: "🛳️",
+  actual: "🛳"
+}, {
+  expected: "🛳",
+  actual: "🛳"
+}, {
+  expected: "🛥️",
+  actual: "🛥"
+}, {
+  expected: "🛥",
+  actual: "🛥"
+}, {
+  expected: "🚢",
+  actual: "🚢"
+}, {
+  expected: "🛩️",
+  actual: "🛩"
+}, {
+  expected: "🛩",
+  actual: "🛩"
+}, {
+  expected: "🛫",
+  actual: "🛫"
+}, {
+  expected: "🛬",
+  actual: "🛬"
+}, {
+  expected: "🪂",
+  actual: "🪂"
+}, {
+  expected: "💺",
+  actual: "💺"
+}, {
+  expected: "🚁",
+  actual: "🚁"
+}, {
+  expected: "🚟",
+  actual: "🚟"
+}, {
+  expected: "🚠",
+  actual: "🚠"
+}, {
+  expected: "🚡",
+  actual: "🚡"
+}, {
+  expected: "🛰️",
+  actual: "🛰"
+}, {
+  expected: "🛰",
+  actual: "🛰"
+}, {
+  expected: "🚀",
+  actual: "🚀"
+}, {
+  expected: "🛸",
+  actual: "🛸"
+}, {
+  expected: "🛎️",
+  actual: "🛎"
+}, {
+  expected: "🛎",
+  actual: "🛎"
+}, {
+  expected: "🧳",
+  actual: "🧳"
+}, {
+  expected: "🕰️",
+  actual: "🕰"
+}, {
+  expected: "🕰",
+  actual: "🕰"
+}, {
+  expected: "🕛",
+  actual: "🕛"
+}, {
+  expected: "🕧",
+  actual: "🕧"
+}, {
+  expected: "🕐",
+  actual: "🕐"
+}, {
+  expected: "🕜",
+  actual: "🕜"
+}, {
+  expected: "🕑",
+  actual: "🕑"
+}, {
+  expected: "🕝",
+  actual: "🕝"
+}, {
+  expected: "🕒",
+  actual: "🕒"
+}, {
+  expected: "🕞",
+  actual: "🕞"
+}, {
+  expected: "🕓",
+  actual: "🕓"
+}, {
+  expected: "🕟",
+  actual: "🕟"
+}, {
+  expected: "🕔",
+  actual: "🕔"
+}, {
+  expected: "🕠",
+  actual: "🕠"
+}, {
+  expected: "🕕",
+  actual: "🕕"
+}, {
+  expected: "🕡",
+  actual: "🕡"
+}, {
+  expected: "🕖",
+  actual: "🕖"
+}, {
+  expected: "🕢",
+  actual: "🕢"
+}, {
+  expected: "🕗",
+  actual: "🕗"
+}, {
+  expected: "🕣",
+  actual: "🕣"
+}, {
+  expected: "🕘",
+  actual: "🕘"
+}, {
+  expected: "🕤",
+  actual: "🕤"
+}, {
+  expected: "🕙",
+  actual: "🕙"
+}, {
+  expected: "🕥",
+  actual: "🕥"
+}, {
+  expected: "🕚",
+  actual: "🕚"
+}, {
+  expected: "🕦",
+  actual: "🕦"
+}, {
+  expected: "🌑",
+  actual: "🌑"
+}, {
+  expected: "🌒",
+  actual: "🌒"
+}, {
+  expected: "🌓",
+  actual: "🌓"
+}, {
+  expected: "🌔",
+  actual: "🌔"
+}, {
+  expected: "🌕",
+  actual: "🌕"
+}, {
+  expected: "🌖",
+  actual: "🌖"
+}, {
+  expected: "🌗",
+  actual: "🌗"
+}, {
+  expected: "🌘",
+  actual: "🌘"
+}, {
+  expected: "🌙",
+  actual: "🌙"
+}, {
+  expected: "🌚",
+  actual: "🌚"
+}, {
+  expected: "🌛",
+  actual: "🌛"
+}, {
+  expected: "🌜",
+  actual: "🌜"
+}, {
+  expected: "🌡️",
+  actual: "🌡"
+}, {
+  expected: "🌡",
+  actual: "🌡"
+}, {
+  expected: "🌝",
+  actual: "🌝"
+}, {
+  expected: "🌞",
+  actual: "🌞"
+}, {
+  expected: "🪐",
+  actual: "🪐"
+}, {
+  expected: "🌟",
+  actual: "🌟"
+}, {
+  expected: "🌠",
+  actual: "🌠"
+}, {
+  expected: "🌌",
+  actual: "🌌"
+}, {
+  expected: "🌤️",
+  actual: "🌤"
+}, {
+  expected: "🌤",
+  actual: "🌤"
+}, {
+  expected: "🌥️",
+  actual: "🌥"
+}, {
+  expected: "🌥",
+  actual: "🌥"
+}, {
+  expected: "🌦️",
+  actual: "🌦"
+}, {
+  expected: "🌦",
+  actual: "🌦"
+}, {
+  expected: "🌧️",
+  actual: "🌧"
+}, {
+  expected: "🌧",
+  actual: "🌧"
+}, {
+  expected: "🌨️",
+  actual: "🌨"
+}, {
+  expected: "🌨",
+  actual: "🌨"
+}, {
+  expected: "🌩️",
+  actual: "🌩"
+}, {
+  expected: "🌩",
+  actual: "🌩"
+}, {
+  expected: "🌪️",
+  actual: "🌪"
+}, {
+  expected: "🌪",
+  actual: "🌪"
+}, {
+  expected: "🌫️",
+  actual: "🌫"
+}, {
+  expected: "🌫",
+  actual: "🌫"
+}, {
+  expected: "🌬️",
+  actual: "🌬"
+}, {
+  expected: "🌬",
+  actual: "🌬"
+}, {
+  expected: "🌀",
+  actual: "🌀"
+}, {
+  expected: "🌈",
+  actual: "🌈"
+}, {
+  expected: "🌂",
+  actual: "🌂"
+}, {
+  expected: "🔥",
+  actual: "🔥"
+}, {
+  expected: "💧",
+  actual: "💧"
+}, {
+  expected: "🌊",
+  actual: "🌊"
+}, {
+  expected: "🎃",
+  actual: "🎃"
+}, {
+  expected: "🎄",
+  actual: "🎄"
+}, {
+  expected: "🎆",
+  actual: "🎆"
+}, {
+  expected: "🎇",
+  actual: "🎇"
+}, {
+  expected: "🧨",
+  actual: "🧨"
+}, {
+  expected: "🎈",
+  actual: "🎈"
+}, {
+  expected: "🎉",
+  actual: "🎉"
+}, {
+  expected: "🎊",
+  actual: "🎊"
+}, {
+  expected: "🎋",
+  actual: "🎋"
+}, {
+  expected: "🎍",
+  actual: "🎍"
+}, {
+  expected: "🎎",
+  actual: "🎎"
+}, {
+  expected: "🎏",
+  actual: "🎏"
+}, {
+  expected: "🎐",
+  actual: "🎐"
+}, {
+  expected: "🎑",
+  actual: "🎑"
+}, {
+  expected: "🧧",
+  actual: "🧧"
+}, {
+  expected: "🎀",
+  actual: "🎀"
+}, {
+  expected: "🎁",
+  actual: "🎁"
+}, {
+  expected: "🎗️",
+  actual: "🎗"
+}, {
+  expected: "🎗",
+  actual: "🎗"
+}, {
+  expected: "🎟️",
+  actual: "🎟"
+}, {
+  expected: "🎟",
+  actual: "🎟"
+}, {
+  expected: "🎫",
+  actual: "🎫"
+}, {
+  expected: "🎖️",
+  actual: "🎖"
+}, {
+  expected: "🎖",
+  actual: "🎖"
+}, {
+  expected: "🏆",
+  actual: "🏆"
+}, {
+  expected: "🏅",
+  actual: "🏅"
+}, {
+  expected: "🥇",
+  actual: "🥇"
+}, {
+  expected: "🥈",
+  actual: "🥈"
+}, {
+  expected: "🥉",
+  actual: "🥉"
+}, {
+  expected: "🥎",
+  actual: "🥎"
+}, {
+  expected: "🏀",
+  actual: "🏀"
+}, {
+  expected: "🏐",
+  actual: "🏐"
+}, {
+  expected: "🏈",
+  actual: "🏈"
+}, {
+  expected: "🏉",
+  actual: "🏉"
+}, {
+  expected: "🎾",
+  actual: "🎾"
+}, {
+  expected: "🥏",
+  actual: "🥏"
+}, {
+  expected: "🎳",
+  actual: "🎳"
+}, {
+  expected: "🏏",
+  actual: "🏏"
+}, {
+  expected: "🏑",
+  actual: "🏑"
+}, {
+  expected: "🏒",
+  actual: "🏒"
+}, {
+  expected: "🥍",
+  actual: "🥍"
+}, {
+  expected: "🏓",
+  actual: "🏓"
+}, {
+  expected: "🏸",
+  actual: "🏸"
+}, {
+  expected: "🥊",
+  actual: "🥊"
+}, {
+  expected: "🥋",
+  actual: "🥋"
+}, {
+  expected: "🥅",
+  actual: "🥅"
+}, {
+  expected: "🎣",
+  actual: "🎣"
+}, {
+  expected: "🤿",
+  actual: "🤿"
+}, {
+  expected: "🎽",
+  actual: "🎽"
+}, {
+  expected: "🎿",
+  actual: "🎿"
+}, {
+  expected: "🛷",
+  actual: "🛷"
+}, {
+  expected: "🥌",
+  actual: "🥌"
+}, {
+  expected: "🎯",
+  actual: "🎯"
+}, {
+  expected: "🪀",
+  actual: "🪀"
+}, {
+  expected: "🪁",
+  actual: "🪁"
+}, {
+  expected: "🔫",
+  actual: "🔫"
+}, {
+  expected: "🎱",
+  actual: "🎱"
+}, {
+  expected: "🔮",
+  actual: "🔮"
+}, {
+  expected: "🪄",
+  actual: "🪄"
+}, {
+  expected: "🎮",
+  actual: "🎮"
+}, {
+  expected: "🕹️",
+  actual: "🕹"
+}, {
+  expected: "🕹",
+  actual: "🕹"
+}, {
+  expected: "🎰",
+  actual: "🎰"
+}, {
+  expected: "🎲",
+  actual: "🎲"
+}, {
+  expected: "🧩",
+  actual: "🧩"
+}, {
+  expected: "🧸",
+  actual: "🧸"
+}, {
+  expected: "🪅",
+  actual: "🪅"
+}, {
+  expected: "🪩",
+  actual: "🪩"
+}, {
+  expected: "🪆",
+  actual: "🪆"
+}, {
+  expected: "🃏",
+  actual: "🃏"
+}, {
+  expected: "🀄",
+  actual: "🀄"
+}, {
+  expected: "🎴",
+  actual: "🎴"
+}, {
+  expected: "🎭",
+  actual: "🎭"
+}, {
+  expected: "🖼️",
+  actual: "🖼"
+}, {
+  expected: "🖼",
+  actual: "🖼"
+}, {
+  expected: "🎨",
+  actual: "🎨"
+}, {
+  expected: "🧵",
+  actual: "🧵"
+}, {
+  expected: "🪡",
+  actual: "🪡"
+}, {
+  expected: "🧶",
+  actual: "🧶"
+}, {
+  expected: "🪢",
+  actual: "🪢"
+}, {
+  expected: "👓",
+  actual: "👓"
+}, {
+  expected: "🕶️",
+  actual: "🕶"
+}, {
+  expected: "🕶",
+  actual: "🕶"
+}, {
+  expected: "🥽",
+  actual: "🥽"
+}, {
+  expected: "🥼",
+  actual: "🥼"
+}, {
+  expected: "🦺",
+  actual: "🦺"
+}, {
+  expected: "👔",
+  actual: "👔"
+}, {
+  expected: "👕",
+  actual: "👕"
+}, {
+  expected: "👖",
+  actual: "👖"
+}, {
+  expected: "🧣",
+  actual: "🧣"
+}, {
+  expected: "🧤",
+  actual: "🧤"
+}, {
+  expected: "🧥",
+  actual: "🧥"
+}, {
+  expected: "🧦",
+  actual: "🧦"
+}, {
+  expected: "👗",
+  actual: "👗"
+}, {
+  expected: "👘",
+  actual: "👘"
+}, {
+  expected: "🥻",
+  actual: "🥻"
+}, {
+  expected: "🩱",
+  actual: "🩱"
+}, {
+  expected: "🩲",
+  actual: "🩲"
+}, {
+  expected: "🩳",
+  actual: "🩳"
+}, {
+  expected: "👙",
+  actual: "👙"
+}, {
+  expected: "👚",
+  actual: "👚"
+}, {
+  expected: "🪭",
+  actual: "🪭"
+}, {
+  expected: "👛",
+  actual: "👛"
+}, {
+  expected: "👜",
+  actual: "👜"
+}, {
+  expected: "👝",
+  actual: "👝"
+}, {
+  expected: "🛍️",
+  actual: "🛍"
+}, {
+  expected: "🛍",
+  actual: "🛍"
+}, {
+  expected: "🎒",
+  actual: "🎒"
+}, {
+  expected: "🩴",
+  actual: "🩴"
+}, {
+  expected: "👞",
+  actual: "👞"
+}, {
+  expected: "👟",
+  actual: "👟"
+}, {
+  expected: "🥾",
+  actual: "🥾"
+}, {
+  expected: "🥿",
+  actual: "🥿"
+}, {
+  expected: "👠",
+  actual: "👠"
+}, {
+  expected: "👡",
+  actual: "👡"
+}, {
+  expected: "🩰",
+  actual: "🩰"
+}, {
+  expected: "👢",
+  actual: "👢"
+}, {
+  expected: "🪮",
+  actual: "🪮"
+}, {
+  expected: "👑",
+  actual: "👑"
+}, {
+  expected: "👒",
+  actual: "👒"
+}, {
+  expected: "🎩",
+  actual: "🎩"
+}, {
+  expected: "🎓",
+  actual: "🎓"
+}, {
+  expected: "🧢",
+  actual: "🧢"
+}, {
+  expected: "🪖",
+  actual: "🪖"
+}, {
+  expected: "📿",
+  actual: "📿"
+}, {
+  expected: "💄",
+  actual: "💄"
+}, {
+  expected: "💍",
+  actual: "💍"
+}, {
+  expected: "💎",
+  actual: "💎"
+}, {
+  expected: "🔇",
+  actual: "🔇"
+}, {
+  expected: "🔈",
+  actual: "🔈"
+}, {
+  expected: "🔉",
+  actual: "🔉"
+}, {
+  expected: "🔊",
+  actual: "🔊"
+}, {
+  expected: "📢",
+  actual: "📢"
+}, {
+  expected: "📣",
+  actual: "📣"
+}, {
+  expected: "📯",
+  actual: "📯"
+}, {
+  expected: "🔔",
+  actual: "🔔"
+}, {
+  expected: "🔕",
+  actual: "🔕"
+}, {
+  expected: "🎼",
+  actual: "🎼"
+}, {
+  expected: "🎵",
+  actual: "🎵"
+}, {
+  expected: "🎶",
+  actual: "🎶"
+}, {
+  expected: "🎙️",
+  actual: "🎙"
+}, {
+  expected: "🎙",
+  actual: "🎙"
+}, {
+  expected: "🎚️",
+  actual: "🎚"
+}, {
+  expected: "🎚",
+  actual: "🎚"
+}, {
+  expected: "🎛️",
+  actual: "🎛"
+}, {
+  expected: "🎛",
+  actual: "🎛"
+}, {
+  expected: "🎤",
+  actual: "🎤"
+}, {
+  expected: "🎧",
+  actual: "🎧"
+}, {
+  expected: "📻",
+  actual: "📻"
+}, {
+  expected: "🎷",
+  actual: "🎷"
+}, {
+  expected: "🪗",
+  actual: "🪗"
+}, {
+  expected: "🎸",
+  actual: "🎸"
+}, {
+  expected: "🎹",
+  actual: "🎹"
+}, {
+  expected: "🎺",
+  actual: "🎺"
+}, {
+  expected: "🎻",
+  actual: "🎻"
+}, {
+  expected: "🪕",
+  actual: "🪕"
+}, {
+  expected: "🥁",
+  actual: "🥁"
+}, {
+  expected: "🪘",
+  actual: "🪘"
+}, {
+  expected: "🪇",
+  actual: "🪇"
+}, {
+  expected: "🪈",
+  actual: "🪈"
+}, {
+  expected: "📱",
+  actual: "📱"
+}, {
+  expected: "📲",
+  actual: "📲"
+}, {
+  expected: "📞",
+  actual: "📞"
+}, {
+  expected: "📟",
+  actual: "📟"
+}, {
+  expected: "📠",
+  actual: "📠"
+}, {
+  expected: "🔋",
+  actual: "🔋"
+}, {
+  expected: "🪫",
+  actual: "🪫"
+}, {
+  expected: "🔌",
+  actual: "🔌"
+}, {
+  expected: "💻",
+  actual: "💻"
+}, {
+  expected: "🖥️",
+  actual: "🖥"
+}, {
+  expected: "🖥",
+  actual: "🖥"
+}, {
+  expected: "🖨️",
+  actual: "🖨"
+}, {
+  expected: "🖨",
+  actual: "🖨"
+}, {
+  expected: "🖱️",
+  actual: "🖱"
+}, {
+  expected: "🖱",
+  actual: "🖱"
+}, {
+  expected: "🖲️",
+  actual: "🖲"
+}, {
+  expected: "🖲",
+  actual: "🖲"
+}, {
+  expected: "💽",
+  actual: "💽"
+}, {
+  expected: "💾",
+  actual: "💾"
+}, {
+  expected: "💿",
+  actual: "💿"
+}, {
+  expected: "📀",
+  actual: "📀"
+}, {
+  expected: "🧮",
+  actual: "🧮"
+}, {
+  expected: "🎥",
+  actual: "🎥"
+}, {
+  expected: "🎞️",
+  actual: "🎞"
+}, {
+  expected: "🎞",
+  actual: "🎞"
+}, {
+  expected: "📽️",
+  actual: "📽"
+}, {
+  expected: "📽",
+  actual: "📽"
+}, {
+  expected: "🎬",
+  actual: "🎬"
+}, {
+  expected: "📺",
+  actual: "📺"
+}, {
+  expected: "📷",
+  actual: "📷"
+}, {
+  expected: "📸",
+  actual: "📸"
+}, {
+  expected: "📹",
+  actual: "📹"
+}, {
+  expected: "📼",
+  actual: "📼"
+}, {
+  expected: "🔍",
+  actual: "🔍"
+}, {
+  expected: "🔎",
+  actual: "🔎"
+}, {
+  expected: "🕯️",
+  actual: "🕯"
+}, {
+  expected: "🕯",
+  actual: "🕯"
+}, {
+  expected: "💡",
+  actual: "💡"
+}, {
+  expected: "🔦",
+  actual: "🔦"
+}, {
+  expected: "🏮",
+  actual: "🏮"
+}, {
+  expected: "🪔",
+  actual: "🪔"
+}, {
+  expected: "📔",
+  actual: "📔"
+}, {
+  expected: "📕",
+  actual: "📕"
+}, {
+  expected: "📖",
+  actual: "📖"
+}, {
+  expected: "📗",
+  actual: "📗"
+}, {
+  expected: "📘",
+  actual: "📘"
+}, {
+  expected: "📙",
+  actual: "📙"
+}, {
+  expected: "📚",
+  actual: "📚"
+}, {
+  expected: "📓",
+  actual: "📓"
+}, {
+  expected: "📒",
+  actual: "📒"
+}, {
+  expected: "📃",
+  actual: "📃"
+}, {
+  expected: "📜",
+  actual: "📜"
+}, {
+  expected: "📄",
+  actual: "📄"
+}, {
+  expected: "📰",
+  actual: "📰"
+}, {
+  expected: "🗞️",
+  actual: "🗞"
+}, {
+  expected: "🗞",
+  actual: "🗞"
+}, {
+  expected: "📑",
+  actual: "📑"
+}, {
+  expected: "🔖",
+  actual: "🔖"
+}, {
+  expected: "🏷️",
+  actual: "🏷"
+}, {
+  expected: "🏷",
+  actual: "🏷"
+}, {
+  expected: "💰",
+  actual: "💰"
+}, {
+  expected: "🪙",
+  actual: "🪙"
+}, {
+  expected: "💴",
+  actual: "💴"
+}, {
+  expected: "💵",
+  actual: "💵"
+}, {
+  expected: "💶",
+  actual: "💶"
+}, {
+  expected: "💷",
+  actual: "💷"
+}, {
+  expected: "💸",
+  actual: "💸"
+}, {
+  expected: "💳",
+  actual: "💳"
+}, {
+  expected: "🧾",
+  actual: "🧾"
+}, {
+  expected: "💹",
+  actual: "💹"
+}, {
+  expected: "📧",
+  actual: "📧"
+}, {
+  expected: "📨",
+  actual: "📨"
+}, {
+  expected: "📩",
+  actual: "📩"
+}, {
+  expected: "📤",
+  actual: "📤"
+}, {
+  expected: "📥",
+  actual: "📥"
+}, {
+  expected: "📦",
+  actual: "📦"
+}, {
+  expected: "📫",
+  actual: "📫"
+}, {
+  expected: "📪",
+  actual: "📪"
+}, {
+  expected: "📬",
+  actual: "📬"
+}, {
+  expected: "📭",
+  actual: "📭"
+}, {
+  expected: "📮",
+  actual: "📮"
+}, {
+  expected: "🗳️",
+  actual: "🗳"
+}, {
+  expected: "🗳",
+  actual: "🗳"
+}, {
+  expected: "🖋️",
+  actual: "🖋"
+}, {
+  expected: "🖋",
+  actual: "🖋"
+}, {
+  expected: "🖊️",
+  actual: "🖊"
+}, {
+  expected: "🖊",
+  actual: "🖊"
+}, {
+  expected: "🖌️",
+  actual: "🖌"
+}, {
+  expected: "🖌",
+  actual: "🖌"
+}, {
+  expected: "🖍️",
+  actual: "🖍"
+}, {
+  expected: "🖍",
+  actual: "🖍"
+}, {
+  expected: "📝",
+  actual: "📝"
+}, {
+  expected: "💼",
+  actual: "💼"
+}, {
+  expected: "📁",
+  actual: "📁"
+}, {
+  expected: "📂",
+  actual: "📂"
+}, {
+  expected: "🗂️",
+  actual: "🗂"
+}, {
+  expected: "🗂",
+  actual: "🗂"
+}, {
+  expected: "📅",
+  actual: "📅"
+}, {
+  expected: "📆",
+  actual: "📆"
+}, {
+  expected: "🗒️",
+  actual: "🗒"
+}, {
+  expected: "🗒",
+  actual: "🗒"
+}, {
+  expected: "🗓️",
+  actual: "🗓"
+}, {
+  expected: "🗓",
+  actual: "🗓"
+}, {
+  expected: "📇",
+  actual: "📇"
+}, {
+  expected: "📈",
+  actual: "📈"
+}, {
+  expected: "📉",
+  actual: "📉"
+}, {
+  expected: "📊",
+  actual: "📊"
+}, {
+  expected: "📋",
+  actual: "📋"
+}, {
+  expected: "📌",
+  actual: "📌"
+}, {
+  expected: "📍",
+  actual: "📍"
+}, {
+  expected: "📎",
+  actual: "📎"
+}, {
+  expected: "🖇️",
+  actual: "🖇"
+}, {
+  expected: "🖇",
+  actual: "🖇"
+}, {
+  expected: "📏",
+  actual: "📏"
+}, {
+  expected: "📐",
+  actual: "📐"
+}, {
+  expected: "🗃️",
+  actual: "🗃"
+}, {
+  expected: "🗃",
+  actual: "🗃"
+}, {
+  expected: "🗄️",
+  actual: "🗄"
+}, {
+  expected: "🗄",
+  actual: "🗄"
+}, {
+  expected: "🗑️",
+  actual: "🗑"
+}, {
+  expected: "🗑",
+  actual: "🗑"
+}, {
+  expected: "🔒",
+  actual: "🔒"
+}, {
+  expected: "🔓",
+  actual: "🔓"
+}, {
+  expected: "🔏",
+  actual: "🔏"
+}, {
+  expected: "🔐",
+  actual: "🔐"
+}, {
+  expected: "🔑",
+  actual: "🔑"
+}, {
+  expected: "🗝️",
+  actual: "🗝"
+}, {
+  expected: "🗝",
+  actual: "🗝"
+}, {
+  expected: "🔨",
+  actual: "🔨"
+}, {
+  expected: "🪓",
+  actual: "🪓"
+}, {
+  expected: "🛠️",
+  actual: "🛠"
+}, {
+  expected: "🛠",
+  actual: "🛠"
+}, {
+  expected: "🗡️",
+  actual: "🗡"
+}, {
+  expected: "🗡",
+  actual: "🗡"
+}, {
+  expected: "💣",
+  actual: "💣"
+}, {
+  expected: "🪃",
+  actual: "🪃"
+}, {
+  expected: "🏹",
+  actual: "🏹"
+}, {
+  expected: "🛡️",
+  actual: "🛡"
+}, {
+  expected: "🛡",
+  actual: "🛡"
+}, {
+  expected: "🪚",
+  actual: "🪚"
+}, {
+  expected: "🔧",
+  actual: "🔧"
+}, {
+  expected: "🪛",
+  actual: "🪛"
+}, {
+  expected: "🔩",
+  actual: "🔩"
+}, {
+  expected: "🗜️",
+  actual: "🗜"
+}, {
+  expected: "🗜",
+  actual: "🗜"
+}, {
+  expected: "🦯",
+  actual: "🦯"
+}, {
+  expected: "🔗",
+  actual: "🔗"
+}, {
+  expected: "🪝",
+  actual: "🪝"
+}, {
+  expected: "🧰",
+  actual: "🧰"
+}, {
+  expected: "🧲",
+  actual: "🧲"
+}, {
+  expected: "🪜",
+  actual: "🪜"
+}, {
+  expected: "🧪",
+  actual: "🧪"
+}, {
+  expected: "🧫",
+  actual: "🧫"
+}, {
+  expected: "🧬",
+  actual: "🧬"
+}, {
+  expected: "🔬",
+  actual: "🔬"
+}, {
+  expected: "🔭",
+  actual: "🔭"
+}, {
+  expected: "📡",
+  actual: "📡"
+}, {
+  expected: "💉",
+  actual: "💉"
+}, {
+  expected: "🩸",
+  actual: "🩸"
+}, {
+  expected: "💊",
+  actual: "💊"
+}, {
+  expected: "🩹",
+  actual: "🩹"
+}, {
+  expected: "🩼",
+  actual: "🩼"
+}, {
+  expected: "🩺",
+  actual: "🩺"
+}, {
+  expected: "🩻",
+  actual: "🩻"
+}, {
+  expected: "🚪",
+  actual: "🚪"
+}, {
+  expected: "🛗",
+  actual: "🛗"
+}, {
+  expected: "🪞",
+  actual: "🪞"
+}, {
+  expected: "🪟",
+  actual: "🪟"
+}, {
+  expected: "🛏️",
+  actual: "🛏"
+}, {
+  expected: "🛏",
+  actual: "🛏"
+}, {
+  expected: "🛋️",
+  actual: "🛋"
+}, {
+  expected: "🛋",
+  actual: "🛋"
+}, {
+  expected: "🪑",
+  actual: "🪑"
+}, {
+  expected: "🚽",
+  actual: "🚽"
+}, {
+  expected: "🪠",
+  actual: "🪠"
+}, {
+  expected: "🚿",
+  actual: "🚿"
+}, {
+  expected: "🛁",
+  actual: "🛁"
+}, {
+  expected: "🪤",
+  actual: "🪤"
+}, {
+  expected: "🪒",
+  actual: "🪒"
+}, {
+  expected: "🧴",
+  actual: "🧴"
+}, {
+  expected: "🧷",
+  actual: "🧷"
+}, {
+  expected: "🧹",
+  actual: "🧹"
+}, {
+  expected: "🧺",
+  actual: "🧺"
+}, {
+  expected: "🧻",
+  actual: "🧻"
+}, {
+  expected: "🪣",
+  actual: "🪣"
+}, {
+  expected: "🧼",
+  actual: "🧼"
+}, {
+  expected: "🫧",
+  actual: "🫧"
+}, {
+  expected: "🪥",
+  actual: "🪥"
+}, {
+  expected: "🧽",
+  actual: "🧽"
+}, {
+  expected: "🧯",
+  actual: "🧯"
+}, {
+  expected: "🛒",
+  actual: "🛒"
+}, {
+  expected: "🚬",
+  actual: "🚬"
+}, {
+  expected: "🪦",
+  actual: "🪦"
+}, {
+  expected: "🧿",
+  actual: "🧿"
+}, {
+  expected: "🪬",
+  actual: "🪬"
+}, {
+  expected: "🗿",
+  actual: "🗿"
+}, {
+  expected: "🪧",
+  actual: "🪧"
+}, {
+  expected: "🪪",
+  actual: "🪪"
+}, {
+  expected: "🏧",
+  actual: "🏧"
+}, {
+  expected: "🚮",
+  actual: "🚮"
+}, {
+  expected: "🚰",
+  actual: "🚰"
+}, {
+  expected: "🚹",
+  actual: "🚹"
+}, {
+  expected: "🚺",
+  actual: "🚺"
+}, {
+  expected: "🚻",
+  actual: "🚻"
+}, {
+  expected: "🚼",
+  actual: "🚼"
+}, {
+  expected: "🚾",
+  actual: "🚾"
+}, {
+  expected: "🛂",
+  actual: "🛂"
+}, {
+  expected: "🛃",
+  actual: "🛃"
+}, {
+  expected: "🛄",
+  actual: "🛄"
+}, {
+  expected: "🛅",
+  actual: "🛅"
+}, {
+  expected: "🚸",
+  actual: "🚸"
+}, {
+  expected: "🚫",
+  actual: "🚫"
+}, {
+  expected: "🚳",
+  actual: "🚳"
+}, {
+  expected: "🚭",
+  actual: "🚭"
+}, {
+  expected: "🚯",
+  actual: "🚯"
+}, {
+  expected: "🚱",
+  actual: "🚱"
+}, {
+  expected: "🚷",
+  actual: "🚷"
+}, {
+  expected: "📵",
+  actual: "📵"
+}, {
+  expected: "🔞",
+  actual: "🔞"
+}, {
+  expected: "🔃",
+  actual: "🔃"
+}, {
+  expected: "🔄",
+  actual: "🔄"
+}, {
+  expected: "🔙",
+  actual: "🔙"
+}, {
+  expected: "🔚",
+  actual: "🔚"
+}, {
+  expected: "🔛",
+  actual: "🔛"
+}, {
+  expected: "🔜",
+  actual: "🔜"
+}, {
+  expected: "🔝",
+  actual: "🔝"
+}, {
+  expected: "🛐",
+  actual: "🛐"
+}, {
+  expected: "🕉️",
+  actual: "🕉"
+}, {
+  expected: "🕉",
+  actual: "🕉"
+}, {
+  expected: "🕎",
+  actual: "🕎"
+}, {
+  expected: "🔯",
+  actual: "🔯"
+}, {
+  expected: "🪯",
+  actual: "🪯"
+}, {
+  expected: "🔀",
+  actual: "🔀"
+}, {
+  expected: "🔁",
+  actual: "🔁"
+}, {
+  expected: "🔂",
+  actual: "🔂"
+}, {
+  expected: "🔼",
+  actual: "🔼"
+}, {
+  expected: "🔽",
+  actual: "🔽"
+}, {
+  expected: "🎦",
+  actual: "🎦"
+}, {
+  expected: "🔅",
+  actual: "🔅"
+}, {
+  expected: "🔆",
+  actual: "🔆"
+}, {
+  expected: "📶",
+  actual: "📶"
+}, {
+  expected: "🛜",
+  actual: "🛜"
+}, {
+  expected: "📳",
+  actual: "📳"
+}, {
+  expected: "📴",
+  actual: "📴"
+}, {
+  expected: "🟰",
+  actual: "🟰"
+}, {
+  expected: "💱",
+  actual: "💱"
+}, {
+  expected: "💲",
+  actual: "💲"
+}, {
+  expected: "🔱",
+  actual: "🔱"
+}, {
+  expected: "📛",
+  actual: "📛"
+}, {
+  expected: "🔰",
+  actual: "🔰"
+}, {
+  expected: "#️⃣",
+  actual: "#⃣"
+}, {
+  expected: "#⃣",
+  actual: "#⃣"
+}, {
+  expected: "*️⃣",
+  actual: "*⃣"
+}, {
+  expected: "*⃣",
+  actual: "*⃣"
+}, {
+  expected: "0️⃣",
+  actual: "0⃣"
+}, {
+  expected: "0⃣",
+  actual: "0⃣"
+}, {
+  expected: "1️⃣",
+  actual: "1⃣"
+}, {
+  expected: "1⃣",
+  actual: "1⃣"
+}, {
+  expected: "2️⃣",
+  actual: "2⃣"
+}, {
+  expected: "2⃣",
+  actual: "2⃣"
+}, {
+  expected: "3️⃣",
+  actual: "3⃣"
+}, {
+  expected: "3⃣",
+  actual: "3⃣"
+}, {
+  expected: "4️⃣",
+  actual: "4⃣"
+}, {
+  expected: "4⃣",
+  actual: "4⃣"
+}, {
+  expected: "5️⃣",
+  actual: "5⃣"
+}, {
+  expected: "5⃣",
+  actual: "5⃣"
+}, {
+  expected: "6️⃣",
+  actual: "6⃣"
+}, {
+  expected: "6⃣",
+  actual: "6⃣"
+}, {
+  expected: "7️⃣",
+  actual: "7⃣"
+}, {
+  expected: "7⃣",
+  actual: "7⃣"
+}, {
+  expected: "8️⃣",
+  actual: "8⃣"
+}, {
+  expected: "8⃣",
+  actual: "8⃣"
+}, {
+  expected: "9️⃣",
+  actual: "9⃣"
+}, {
+  expected: "9⃣",
+  actual: "9⃣"
+}, {
+  expected: "🔟",
+  actual: "🔟"
+}, {
+  expected: "🔠",
+  actual: "🔠"
+}, {
+  expected: "🔡",
+  actual: "🔡"
+}, {
+  expected: "🔢",
+  actual: "🔢"
+}, {
+  expected: "🔣",
+  actual: "🔣"
+}, {
+  expected: "🔤",
+  actual: "🔤"
+}, {
+  expected: "🅰️",
+  actual: "🅰"
+}, {
+  expected: "🅰",
+  actual: "🅰"
+}, {
+  expected: "🆎",
+  actual: "🆎"
+}, {
+  expected: "🅱️",
+  actual: "🅱"
+}, {
+  expected: "🅱",
+  actual: "🅱"
+}, {
+  expected: "🆑",
+  actual: "🆑"
+}, {
+  expected: "🆒",
+  actual: "🆒"
+}, {
+  expected: "🆓",
+  actual: "🆓"
+}, {
+  expected: "🆔",
+  actual: "🆔"
+}, {
+  expected: "🆕",
+  actual: "🆕"
+}, {
+  expected: "🆖",
+  actual: "🆖"
+}, {
+  expected: "🅾️",
+  actual: "🅾"
+}, {
+  expected: "🅾",
+  actual: "🅾"
+}, {
+  expected: "🆗",
+  actual: "🆗"
+}, {
+  expected: "🅿️",
+  actual: "🅿"
+}, {
+  expected: "🅿",
+  actual: "🅿"
+}, {
+  expected: "🆘",
+  actual: "🆘"
+}, {
+  expected: "🆙",
+  actual: "🆙"
+}, {
+  expected: "🆚",
+  actual: "🆚"
+}, {
+  expected: "🈁",
+  actual: "🈁"
+}, {
+  expected: "🈂️",
+  actual: "🈂"
+}, {
+  expected: "🈂",
+  actual: "🈂"
+}, {
+  expected: "🈷️",
+  actual: "🈷"
+}, {
+  expected: "🈷",
+  actual: "🈷"
+}, {
+  expected: "🈶",
+  actual: "🈶"
+}, {
+  expected: "🈯",
+  actual: "🈯"
+}, {
+  expected: "🉐",
+  actual: "🉐"
+}, {
+  expected: "🈹",
+  actual: "🈹"
+}, {
+  expected: "🈚",
+  actual: "🈚"
+}, {
+  expected: "🈲",
+  actual: "🈲"
+}, {
+  expected: "🉑",
+  actual: "🉑"
+}, {
+  expected: "🈸",
+  actual: "🈸"
+}, {
+  expected: "🈴",
+  actual: "🈴"
+}, {
+  expected: "🈳",
+  actual: "🈳"
+}, {
+  expected: "🈺",
+  actual: "🈺"
+}, {
+  expected: "🈵",
+  actual: "🈵"
+}, {
+  expected: "🔴",
+  actual: "🔴"
+}, {
+  expected: "🟠",
+  actual: "🟠"
+}, {
+  expected: "🟡",
+  actual: "🟡"
+}, {
+  expected: "🟢",
+  actual: "🟢"
+}, {
+  expected: "🔵",
+  actual: "🔵"
+}, {
+  expected: "🟣",
+  actual: "🟣"
+}, {
+  expected: "🟤",
+  actual: "🟤"
+}, {
+  expected: "🟥",
+  actual: "🟥"
+}, {
+  expected: "🟧",
+  actual: "🟧"
+}, {
+  expected: "🟨",
+  actual: "🟨"
+}, {
+  expected: "🟩",
+  actual: "🟩"
+}, {
+  expected: "🟦",
+  actual: "🟦"
+}, {
+  expected: "🟪",
+  actual: "🟪"
+}, {
+  expected: "🟫",
+  actual: "🟫"
+}, {
+  expected: "🔶",
+  actual: "🔶"
+}, {
+  expected: "🔷",
+  actual: "🔷"
+}, {
+  expected: "🔸",
+  actual: "🔸"
+}, {
+  expected: "🔹",
+  actual: "🔹"
+}, {
+  expected: "🔺",
+  actual: "🔺"
+}, {
+  expected: "🔻",
+  actual: "🔻"
+}, {
+  expected: "💠",
+  actual: "💠"
+}, {
+  expected: "🔘",
+  actual: "🔘"
+}, {
+  expected: "🔳",
+  actual: "🔳"
+}, {
+  expected: "🔲",
+  actual: "🔲"
+}, {
+  expected: "🏁",
+  actual: "🏁"
+}, {
+  expected: "🚩",
+  actual: "🚩"
+}, {
+  expected: "🎌",
+  actual: "🎌"
+}, {
+  expected: "🏴",
+  actual: "🏴"
+}, {
+  expected: "🏳️",
+  actual: "🏳"
+}, {
+  expected: "🏳",
+  actual: "🏳"
+}, {
+  expected: "🏻",
+  actual: "🏻"
+}, {
+  expected: "🏼",
+  actual: "🏼"
+}, {
+  expected: "🏽",
+  actual: "🏽"
+}, {
+  expected: "🏾",
+  actual: "🏾"
+}, {
+  expected: "🏿",
+  actual: "🏿"
+}, {
+  expected: "☺️",
+  actual: "☺"
+}, {
+  expected: "☺",
+  actual: "☺"
+}, {
+  expected: "☹️",
+  actual: "☹"
+}, {
+  expected: "☹",
+  actual: "☹"
+}, {
+  expected: "☠️",
+  actual: "☠"
+}, {
+  expected: "☠",
+  actual: "☠"
+}, {
+  expected: "❣️",
+  actual: "❣"
+}, {
+  expected: "❣",
+  actual: "❣"
+}, {
+  expected: "❤️",
+  actual: "❤"
+}, {
+  expected: "❤",
+  actual: "❤"
+}, {
+  expected: "✋",
+  actual: "✋"
+}, {
+  expected: "✌️",
+  actual: "✌"
+}, {
+  expected: "✌",
+  actual: "✌"
+}, {
+  expected: "☝️",
+  actual: "☝"
+}, {
+  expected: "☝",
+  actual: "☝"
+}, {
+  expected: "✊",
+  actual: "✊"
+}, {
+  expected: "✍️",
+  actual: "✍"
+}, {
+  expected: "✍",
+  actual: "✍"
+}, {
+  expected: "⛷️",
+  actual: "⛷"
+}, {
+  expected: "⛷",
+  actual: "⛷"
+}, {
+  expected: "⛹️",
+  actual: "⛹"
+}, {
+  expected: "⛹",
+  actual: "⛹"
+}, {
+  expected: "☘️",
+  actual: "☘"
+}, {
+  expected: "☘",
+  actual: "☘"
+}, {
+  expected: "☕",
+  actual: "☕"
+}, {
+  expected: "⛰️",
+  actual: "⛰"
+}, {
+  expected: "⛰",
+  actual: "⛰"
+}, {
+  expected: "⛪",
+  actual: "⛪"
+}, {
+  expected: "⛩️",
+  actual: "⛩"
+}, {
+  expected: "⛩",
+  actual: "⛩"
+}, {
+  expected: "⛲",
+  actual: "⛲"
+}, {
+  expected: "⛺",
+  actual: "⛺"
+}, {
+  expected: "♨️",
+  actual: "♨"
+}, {
+  expected: "♨",
+  actual: "♨"
+}, {
+  expected: "⛽",
+  actual: "⛽"
+}, {
+  expected: "⚓",
+  actual: "⚓"
+}, {
+  expected: "⛵",
+  actual: "⛵"
+}, {
+  expected: "⛴️",
+  actual: "⛴"
+}, {
+  expected: "⛴",
+  actual: "⛴"
+}, {
+  expected: "✈️",
+  actual: "✈"
+}, {
+  expected: "✈",
+  actual: "✈"
+}, {
+  expected: "⌛",
+  actual: "⌛"
+}, {
+  expected: "⏳",
+  actual: "⏳"
+}, {
+  expected: "⌚",
+  actual: "⌚"
+}, {
+  expected: "⏰",
+  actual: "⏰"
+}, {
+  expected: "⏱️",
+  actual: "⏱"
+}, {
+  expected: "⏱",
+  actual: "⏱"
+}, {
+  expected: "⏲️",
+  actual: "⏲"
+}, {
+  expected: "⏲",
+  actual: "⏲"
+}, {
+  expected: "☀️",
+  actual: "☀"
+}, {
+  expected: "☀",
+  actual: "☀"
+}, {
+  expected: "⭐",
+  actual: "⭐"
+}, {
+  expected: "☁️",
+  actual: "☁"
+}, {
+  expected: "☁",
+  actual: "☁"
+}, {
+  expected: "⛅",
+  actual: "⛅"
+}, {
+  expected: "⛈️",
+  actual: "⛈"
+}, {
+  expected: "⛈",
+  actual: "⛈"
+}, {
+  expected: "☂️",
+  actual: "☂"
+}, {
+  expected: "☂",
+  actual: "☂"
+}, {
+  expected: "☔",
+  actual: "☔"
+}, {
+  expected: "⛱️",
+  actual: "⛱"
+}, {
+  expected: "⛱",
+  actual: "⛱"
+}, {
+  expected: "⚡",
+  actual: "⚡"
+}, {
+  expected: "❄️",
+  actual: "❄"
+}, {
+  expected: "❄",
+  actual: "❄"
+}, {
+  expected: "☃️",
+  actual: "☃"
+}, {
+  expected: "☃",
+  actual: "☃"
+}, {
+  expected: "⛄",
+  actual: "⛄"
+}, {
+  expected: "☄️",
+  actual: "☄"
+}, {
+  expected: "☄",
+  actual: "☄"
+}, {
+  expected: "✨",
+  actual: "✨"
+}, {
+  expected: "⚽",
+  actual: "⚽"
+}, {
+  expected: "⚾",
+  actual: "⚾"
+}, {
+  expected: "⛳",
+  actual: "⛳"
+}, {
+  expected: "⛸️",
+  actual: "⛸"
+}, {
+  expected: "⛸",
+  actual: "⛸"
+}, {
+  expected: "♠️",
+  actual: "♠"
+}, {
+  expected: "♠",
+  actual: "♠"
+}, {
+  expected: "♥️",
+  actual: "♥"
+}, {
+  expected: "♥",
+  actual: "♥"
+}, {
+  expected: "♦️",
+  actual: "♦"
+}, {
+  expected: "♦",
+  actual: "♦"
+}, {
+  expected: "♣️",
+  actual: "♣"
+}, {
+  expected: "♣",
+  actual: "♣"
+}, {
+  expected: "♟️",
+  actual: "♟"
+}, {
+  expected: "♟",
+  actual: "♟"
+}, {
+  expected: "⛑️",
+  actual: "⛑"
+}, {
+  expected: "⛑",
+  actual: "⛑"
+}, {
+  expected: "☎️",
+  actual: "☎"
+}, {
+  expected: "☎",
+  actual: "☎"
+}, {
+  expected: "⌨️",
+  actual: "⌨"
+}, {
+  expected: "⌨",
+  actual: "⌨"
+}, {
+  expected: "✉️",
+  actual: "✉"
+}, {
+  expected: "✉",
+  actual: "✉"
+}, {
+  expected: "✏️",
+  actual: "✏"
+}, {
+  expected: "✏",
+  actual: "✏"
+}, {
+  expected: "✒️",
+  actual: "✒"
+}, {
+  expected: "✒",
+  actual: "✒"
+}, {
+  expected: "✂️",
+  actual: "✂"
+}, {
+  expected: "✂",
+  actual: "✂"
+}, {
+  expected: "⛏️",
+  actual: "⛏"
+}, {
+  expected: "⛏",
+  actual: "⛏"
+}, {
+  expected: "⚒️",
+  actual: "⚒"
+}, {
+  expected: "⚒",
+  actual: "⚒"
+}, {
+  expected: "⚔️",
+  actual: "⚔"
+}, {
+  expected: "⚔",
+  actual: "⚔"
+}, {
+  expected: "⚙️",
+  actual: "⚙"
+}, {
+  expected: "⚙",
+  actual: "⚙"
+}, {
+  expected: "⚖️",
+  actual: "⚖"
+}, {
+  expected: "⚖",
+  actual: "⚖"
+}, {
+  expected: "⛓️",
+  actual: "⛓"
+}, {
+  expected: "⛓",
+  actual: "⛓"
+}, {
+  expected: "⚗️",
+  actual: "⚗"
+}, {
+  expected: "⚗",
+  actual: "⚗"
+}, {
+  expected: "⚰️",
+  actual: "⚰"
+}, {
+  expected: "⚰",
+  actual: "⚰"
+}, {
+  expected: "⚱️",
+  actual: "⚱"
+}, {
+  expected: "⚱",
+  actual: "⚱"
+}, {
+  expected: "♿",
+  actual: "♿"
+}, {
+  expected: "⚠️",
+  actual: "⚠"
+}, {
+  expected: "⚠",
+  actual: "⚠"
+}, {
+  expected: "⛔",
+  actual: "⛔"
+}, {
+  expected: "☢️",
+  actual: "☢"
+}, {
+  expected: "☢",
+  actual: "☢"
+}, {
+  expected: "☣️",
+  actual: "☣"
+}, {
+  expected: "☣",
+  actual: "☣"
+}, {
+  expected: "⬆️",
+  actual: "⬆"
+}, {
+  expected: "⬆",
+  actual: "⬆"
+}, {
+  expected: "↗️",
+  actual: "↗"
+}, {
+  expected: "↗",
+  actual: "↗"
+}, {
+  expected: "➡️",
+  actual: "➡"
+}, {
+  expected: "➡",
+  actual: "➡"
+}, {
+  expected: "↘️",
+  actual: "↘"
+}, {
+  expected: "↘",
+  actual: "↘"
+}, {
+  expected: "⬇️",
+  actual: "⬇"
+}, {
+  expected: "⬇",
+  actual: "⬇"
+}, {
+  expected: "↙️",
+  actual: "↙"
+}, {
+  expected: "↙",
+  actual: "↙"
+}, {
+  expected: "⬅️",
+  actual: "⬅"
+}, {
+  expected: "⬅",
+  actual: "⬅"
+}, {
+  expected: "↖️",
+  actual: "↖"
+}, {
+  expected: "↖",
+  actual: "↖"
+}, {
+  expected: "↕️",
+  actual: "↕"
+}, {
+  expected: "↕",
+  actual: "↕"
+}, {
+  expected: "↔️",
+  actual: "↔"
+}, {
+  expected: "↔",
+  actual: "↔"
+}, {
+  expected: "↩️",
+  actual: "↩"
+}, {
+  expected: "↩",
+  actual: "↩"
+}, {
+  expected: "↪️",
+  actual: "↪"
+}, {
+  expected: "↪",
+  actual: "↪"
+}, {
+  expected: "⤴️",
+  actual: "⤴"
+}, {
+  expected: "⤴",
+  actual: "⤴"
+}, {
+  expected: "⤵️",
+  actual: "⤵"
+}, {
+  expected: "⤵",
+  actual: "⤵"
+}, {
+  expected: "⚛️",
+  actual: "⚛"
+}, {
+  expected: "⚛",
+  actual: "⚛"
+}, {
+  expected: "✡️",
+  actual: "✡"
+}, {
+  expected: "✡",
+  actual: "✡"
+}, {
+  expected: "☸️",
+  actual: "☸"
+}, {
+  expected: "☸",
+  actual: "☸"
+}, {
+  expected: "☯️",
+  actual: "☯"
+}, {
+  expected: "☯",
+  actual: "☯"
+}, {
+  expected: "✝️",
+  actual: "✝"
+}, {
+  expected: "✝",
+  actual: "✝"
+}, {
+  expected: "☦️",
+  actual: "☦"
+}, {
+  expected: "☦",
+  actual: "☦"
+}, {
+  expected: "☪️",
+  actual: "☪"
+}, {
+  expected: "☪",
+  actual: "☪"
+}, {
+  expected: "☮️",
+  actual: "☮"
+}, {
+  expected: "☮",
+  actual: "☮"
+}, {
+  expected: "♈",
+  actual: "♈"
+}, {
+  expected: "♉",
+  actual: "♉"
+}, {
+  expected: "♊",
+  actual: "♊"
+}, {
+  expected: "♋",
+  actual: "♋"
+}, {
+  expected: "♌",
+  actual: "♌"
+}, {
+  expected: "♍",
+  actual: "♍"
+}, {
+  expected: "♎",
+  actual: "♎"
+}, {
+  expected: "♏",
+  actual: "♏"
+}, {
+  expected: "♐",
+  actual: "♐"
+}, {
+  expected: "♑",
+  actual: "♑"
+}, {
+  expected: "♒",
+  actual: "♒"
+}, {
+  expected: "♓",
+  actual: "♓"
+}, {
+  expected: "⛎",
+  actual: "⛎"
+}, {
+  expected: "▶️",
+  actual: "▶"
+}, {
+  expected: "▶",
+  actual: "▶"
+}, {
+  expected: "⏩",
+  actual: "⏩"
+}, {
+  expected: "⏭️",
+  actual: "⏭"
+}, {
+  expected: "⏭",
+  actual: "⏭"
+}, {
+  expected: "⏯️",
+  actual: "⏯"
+}, {
+  expected: "⏯",
+  actual: "⏯"
+}, {
+  expected: "◀️",
+  actual: "◀"
+}, {
+  expected: "◀",
+  actual: "◀"
+}, {
+  expected: "⏪",
+  actual: "⏪"
+}, {
+  expected: "⏮️",
+  actual: "⏮"
+}, {
+  expected: "⏮",
+  actual: "⏮"
+}, {
+  expected: "⏫",
+  actual: "⏫"
+}, {
+  expected: "⏬",
+  actual: "⏬"
+}, {
+  expected: "⏸️",
+  actual: "⏸"
+}, {
+  expected: "⏸",
+  actual: "⏸"
+}, {
+  expected: "⏹️",
+  actual: "⏹"
+}, {
+  expected: "⏹",
+  actual: "⏹"
+}, {
+  expected: "⏺️",
+  actual: "⏺"
+}, {
+  expected: "⏺",
+  actual: "⏺"
+}, {
+  expected: "⏏️",
+  actual: "⏏"
+}, {
+  expected: "⏏",
+  actual: "⏏"
+}, {
+  expected: "♀️",
+  actual: "♀"
+}, {
+  expected: "♀",
+  actual: "♀"
+}, {
+  expected: "♂️",
+  actual: "♂"
+}, {
+  expected: "♂",
+  actual: "♂"
+}, {
+  expected: "⚧️",
+  actual: "⚧"
+}, {
+  expected: "⚧",
+  actual: "⚧"
+}, {
+  expected: "✖️",
+  actual: "✖"
+}, {
+  expected: "✖",
+  actual: "✖"
+}, {
+  expected: "➕",
+  actual: "➕"
+}, {
+  expected: "➖",
+  actual: "➖"
+}, {
+  expected: "➗",
+  actual: "➗"
+}, {
+  expected: "♾️",
+  actual: "♾"
+}, {
+  expected: "♾",
+  actual: "♾"
+}, {
+  expected: "‼️",
+  actual: "‼"
+}, {
+  expected: "‼",
+  actual: "‼"
+}, {
+  expected: "⁉️",
+  actual: "⁉"
+}, {
+  expected: "⁉",
+  actual: "⁉"
+}, {
+  expected: "❓",
+  actual: "❓"
+}, {
+  expected: "❔",
+  actual: "❔"
+}, {
+  expected: "❕",
+  actual: "❕"
+}, {
+  expected: "❗",
+  actual: "❗"
+}, {
+  expected: "〰️",
+  actual: "〰"
+}, {
+  expected: "〰",
+  actual: "〰"
+}, {
+  expected: "⚕️",
+  actual: "⚕"
+}, {
+  expected: "⚕",
+  actual: "⚕"
+}, {
+  expected: "♻️",
+  actual: "♻"
+}, {
+  expected: "♻",
+  actual: "♻"
+}, {
+  expected: "⚜️",
+  actual: "⚜"
+}, {
+  expected: "⚜",
+  actual: "⚜"
+}, {
+  expected: "⭕",
+  actual: "⭕"
+}, {
+  expected: "✅",
+  actual: "✅"
+}, {
+  expected: "☑️",
+  actual: "☑"
+}, {
+  expected: "☑",
+  actual: "☑"
+}, {
+  expected: "✔️",
+  actual: "✔"
+}, {
+  expected: "✔",
+  actual: "✔"
+}, {
+  expected: "❌",
+  actual: "❌"
+}, {
+  expected: "❎",
+  actual: "❎"
+}, {
+  expected: "➰",
+  actual: "➰"
+}, {
+  expected: "➿",
+  actual: "➿"
+}, {
+  expected: "〽️",
+  actual: "〽"
+}, {
+  expected: "〽",
+  actual: "〽"
+}, {
+  expected: "✳️",
+  actual: "✳"
+}, {
+  expected: "✳",
+  actual: "✳"
+}, {
+  expected: "✴️",
+  actual: "✴"
+}, {
+  expected: "✴",
+  actual: "✴"
+}, {
+  expected: "❇️",
+  actual: "❇"
+}, {
+  expected: "❇",
+  actual: "❇"
+}, {
+  expected: "™️",
+  actual: "™"
+}, {
+  expected: "™",
+  actual: "™"
+}, {
+  expected: "ℹ️",
+  actual: "ℹ"
+}, {
+  expected: "ℹ",
+  actual: "ℹ"
+}, {
+  expected: "Ⓜ️",
+  actual: "Ⓜ"
+}, {
+  expected: "Ⓜ",
+  actual: "Ⓜ"
+}, {
+  expected: "㊗️",
+  actual: "㊗"
+}, {
+  expected: "㊗",
+  actual: "㊗"
+}, {
+  expected: "㊙️",
+  actual: "㊙"
+}, {
+  expected: "㊙",
+  actual: "㊙"
+}, {
+  expected: "⚫",
+  actual: "⚫"
+}, {
+  expected: "⚪",
+  actual: "⚪"
+}, {
+  expected: "⬛",
+  actual: "⬛"
+}, {
+  expected: "⬜",
+  actual: "⬜"
+}, {
+  expected: "◼️",
+  actual: "◼"
+}, {
+  expected: "◼",
+  actual: "◼"
+}, {
+  expected: "◻️",
+  actual: "◻"
+}, {
+  expected: "◻",
+  actual: "◻"
+}, {
+  expected: "◾",
+  actual: "◾"
+}, {
+  expected: "◽",
+  actual: "◽"
+}, {
+  expected: "▪️",
+  actual: "▪"
+}, {
+  expected: "▪",
+  actual: "▪"
+}, {
+  expected: "▫️",
+  actual: "▫"
+}, {
+  expected: "▫",
+  actual: "▫"
+}, {
+  expected: "©️",
+  actual: "©"
+}, {
+  expected: "©",
+  actual: "©"
+}, {
+  expected: "®️",
+  actual: "®"
+}, {
+  expected: "®",
+  actual: "®"
+}];
+const segmenter = new Intl.Segmenter(undefined, {
+  granularity: "grapheme"
+});
+
+/**
+ * @param {string} broken
+ * @returns {string}
+ */
+function fix(broken) {
+  let fixed = "";
+  outer: while (broken.length > 0) {
+    for (const {
+      expected,
+      actual
+    } of unicode_map.values()) {
+      if (broken.startsWith(actual)) {
+        fixed += expected;
+        broken = broken.slice(actual.length);
+        continue outer;
+      }
+    }
+    let grapheme = segmenter.segment(broken)[Symbol.iterator]().next().value.segment;
+    fixed += grapheme;
+    broken = broken.slice(grapheme.length);
+  }
+  return fixed;
+}
+
+var dist = function (e) {
+  var t = {};
+  function a(r) {
+    if (t[r]) return t[r].exports;
+    var n = t[r] = {
+      i: r,
+      l: !1,
+      exports: {}
+    };
+    return e[r].call(n.exports, n, n.exports, a), n.l = !0, n.exports;
+  }
+  return a.m = e, a.c = t, a.d = function (e, t, r) {
+    a.o(e, t) || Object.defineProperty(e, t, {
+      enumerable: !0,
+      get: r
+    });
+  }, a.r = function (e) {
+    "undefined" != typeof Symbol && Symbol.toStringTag && Object.defineProperty(e, Symbol.toStringTag, {
+      value: "Module"
+    }), Object.defineProperty(e, "__esModule", {
+      value: !0
+    });
+  }, a.t = function (e, t) {
+    if (1 & t && (e = a(e)), 8 & t) return e;
+    if (4 & t && "object" == typeof e && e && e.__esModule) return e;
+    var r = Object.create(null);
+    if (a.r(r), Object.defineProperty(r, "default", {
+      enumerable: !0,
+      value: e
+    }), 2 & t && "string" != typeof e) for (var n in e) a.d(r, n, function (t) {
+      return e[t];
+    }.bind(null, n));
+    return r;
+  }, a.n = function (e) {
+    var t = e && e.__esModule ? function () {
+      return e.default;
+    } : function () {
+      return e;
+    };
+    return a.d(t, "a", t), t;
+  }, a.o = function (e, t) {
+    return Object.prototype.hasOwnProperty.call(e, t);
+  }, a.p = "", a(a.s = 4);
+}([function (e, t) {
+  e.exports = require$$0;
+}, function (e, t, a) {
+  e.exports = a(2)();
+}, function (e, t, a) {
+
+  var r = a(3);
+  function n() {}
+  e.exports = function () {
+    function e(e, t, a, n, i, c) {
+      if (c !== r) {
+        var l = new Error("Calling PropTypes validators directly is not supported by the `prop-types` package. Use PropTypes.checkPropTypes() to call them. Read more at http://fb.me/use-check-prop-types");
+        throw l.name = "Invariant Violation", l;
+      }
+    }
+    function t() {
+      return e;
+    }
+    e.isRequired = e;
+    var a = {
+      array: e,
+      bool: e,
+      func: e,
+      number: e,
+      object: e,
+      string: e,
+      symbol: e,
+      any: e,
+      arrayOf: t,
+      element: e,
+      instanceOf: t,
+      node: e,
+      objectOf: t,
+      oneOf: t,
+      oneOfType: t,
+      shape: t,
+      exact: t
+    };
+    return a.checkPropTypes = n, a.PropTypes = a, a;
+  };
+}, function (e, t, a) {
+
+  e.exports = "SECRET_DO_NOT_PASS_THIS_OR_YOU_WILL_BE_FIRED";
+}, function (e, t, a) {
+
+  a.r(t);
+  var r = a(0),
+    n = a.n(r),
+    i = a(1),
+    c = a.n(i);
+  function l() {
+    return (l = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function o(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  var s = function (e) {
+    var t = e.className,
+      a = o(e, ["className"]);
+    return n.a.createElement("svg", l({
+      width: 55,
+      height: 80,
+      fill: "#FFF",
+      viewBox: "0 0 55 80",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("g", {
+      transform: "matrix(1 0 0 -1 0 80)"
+    }, n.a.createElement("rect", {
+      width: 10,
+      height: 20,
+      rx: 3
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0s",
+      dur: "4.3s",
+      values: "20;45;57;80;64;32;66;45;64;23;66;13;64;56;34;34;2;23;76;79;20",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("rect", {
+      x: 15,
+      width: 10,
+      height: 80,
+      rx: 3
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0s",
+      dur: "2s",
+      values: "80;55;33;5;75;23;73;33;12;14;60;80",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("rect", {
+      x: 30,
+      width: 10,
+      height: 50,
+      rx: 3
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0s",
+      dur: "1.4s",
+      values: "50;34;78;23;56;23;34;76;80;54;21;50",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("rect", {
+      x: 45,
+      width: 10,
+      height: 30,
+      rx: 3
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0s",
+      dur: "2s",
+      values: "30;45;13;80;56;72;45;76;34;23;67;30",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }))));
+  };
+  function u() {
+    return (u = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function f(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  s.propTypes = {
+    className: c.a.string
+  }, s.defaultProps = {
+    className: void 0
+  };
+  var m = function (e) {
+    var t = e.className,
+      a = f(e, ["className"]);
+    return n.a.createElement("svg", u({
+      width: 57,
+      height: 57,
+      stroke: "#fff",
+      viewBox: "0 0 57 57",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("g", {
+      transform: "translate(1 1)",
+      strokeWidth: 2,
+      fill: "none",
+      fillRule: "evenodd"
+    }, n.a.createElement("circle", {
+      cx: 5,
+      cy: 50,
+      r: 5
+    }, n.a.createElement("animate", {
+      attributeName: "cy",
+      begin: "0s",
+      dur: "2.2s",
+      values: "50;5;50;50",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "cx",
+      begin: "0s",
+      dur: "2.2s",
+      values: "5;27;49;5",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 27,
+      cy: 5,
+      r: 5
+    }, n.a.createElement("animate", {
+      attributeName: "cy",
+      begin: "0s",
+      dur: "2.2s",
+      from: 5,
+      to: 5,
+      values: "5;50;50;5",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "cx",
+      begin: "0s",
+      dur: "2.2s",
+      from: 27,
+      to: 27,
+      values: "27;49;5;27",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 49,
+      cy: 50,
+      r: 5
+    }, n.a.createElement("animate", {
+      attributeName: "cy",
+      begin: "0s",
+      dur: "2.2s",
+      values: "50;50;5;50",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "cx",
+      from: 49,
+      to: 49,
+      begin: "0s",
+      dur: "2.2s",
+      values: "49;5;27;49",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }))));
+  };
+  function p() {
+    return (p = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function d(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  m.propTypes = {
+    className: c.a.string
+  }, m.defaultProps = {
+    className: void 0
+  };
+  var y = function (e) {
+    var t = e.className,
+      a = d(e, ["className"]);
+    return n.a.createElement("svg", p({
+      width: 135,
+      height: 140,
+      fill: "#fff",
+      viewBox: "0 0 135 140",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("rect", {
+      y: 10,
+      width: 15,
+      height: 120,
+      rx: 6
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0.5s",
+      dur: "1s",
+      values: "120;110;100;90;80;70;60;50;40;140;120",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "y",
+      begin: "0.5s",
+      dur: "1s",
+      values: "10;15;20;25;30;35;40;45;50;0;10",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("rect", {
+      x: 30,
+      y: 10,
+      width: 15,
+      height: 120,
+      rx: 6
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0.25s",
+      dur: "1s",
+      values: "120;110;100;90;80;70;60;50;40;140;120",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "y",
+      begin: "0.25s",
+      dur: "1s",
+      values: "10;15;20;25;30;35;40;45;50;0;10",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("rect", {
+      x: 60,
+      width: 15,
+      height: 140,
+      rx: 6
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0s",
+      dur: "1s",
+      values: "120;110;100;90;80;70;60;50;40;140;120",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "y",
+      begin: "0s",
+      dur: "1s",
+      values: "10;15;20;25;30;35;40;45;50;0;10",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("rect", {
+      x: 90,
+      y: 10,
+      width: 15,
+      height: 120,
+      rx: 6
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0.25s",
+      dur: "1s",
+      values: "120;110;100;90;80;70;60;50;40;140;120",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "y",
+      begin: "0.25s",
+      dur: "1s",
+      values: "10;15;20;25;30;35;40;45;50;0;10",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("rect", {
+      x: 120,
+      y: 10,
+      width: 15,
+      height: 120,
+      rx: 6
+    }, n.a.createElement("animate", {
+      attributeName: "height",
+      begin: "0.5s",
+      dur: "1s",
+      values: "120;110;100;90;80;70;60;50;40;140;120",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "y",
+      begin: "0.5s",
+      dur: "1s",
+      values: "10;15;20;25;30;35;40;45;50;0;10",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })));
+  };
+  function b() {
+    return (b = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function v(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  y.propTypes = {
+    className: c.a.string
+  }, y.defaultProps = {
+    className: void 0
+  };
+  var g = function (e) {
+    var t = e.className,
+      a = v(e, ["className"]);
+    return n.a.createElement("svg", b({
+      width: 135,
+      height: 135,
+      fill: "#fff",
+      viewBox: "0 0 135 135",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("path", {
+      d: "M67.447 58c5.523 0 10-4.477 10-10s-4.477-10-10-10-10 4.477-10 10 4.477 10 10 10zm9.448 9.447c0 5.523 4.477 10 10 10 5.522 0 10-4.477 10-10s-4.478-10-10-10c-5.523 0-10 4.477-10 10zm-9.448 9.448c-5.523 0-10 4.477-10 10 0 5.522 4.477 10 10 10s10-4.478 10-10c0-5.523-4.477-10-10-10zM58 67.447c0-5.523-4.477-10-10-10s-10 4.477-10 10 4.477 10 10 10 10-4.477 10-10z"
+    }, n.a.createElement("animateTransform", {
+      attributeName: "transform",
+      type: "rotate",
+      from: "0 67 67",
+      to: "-360 67 67",
+      dur: "2.5s",
+      repeatCount: "indefinite"
+    })), n.a.createElement("path", {
+      d: "M28.19 40.31c6.627 0 12-5.374 12-12 0-6.628-5.373-12-12-12-6.628 0-12 5.372-12 12 0 6.626 5.372 12 12 12zm30.72-19.825c4.686 4.687 12.284 4.687 16.97 0 4.686-4.686 4.686-12.284 0-16.97-4.686-4.687-12.284-4.687-16.97 0-4.687 4.686-4.687 12.284 0 16.97zm35.74 7.705c0 6.627 5.37 12 12 12 6.626 0 12-5.373 12-12 0-6.628-5.374-12-12-12-6.63 0-12 5.372-12 12zm19.822 30.72c-4.686 4.686-4.686 12.284 0 16.97 4.687 4.686 12.285 4.686 16.97 0 4.687-4.686 4.687-12.284 0-16.97-4.685-4.687-12.283-4.687-16.97 0zm-7.704 35.74c-6.627 0-12 5.37-12 12 0 6.626 5.373 12 12 12s12-5.374 12-12c0-6.63-5.373-12-12-12zm-30.72 19.822c-4.686-4.686-12.284-4.686-16.97 0-4.686 4.687-4.686 12.285 0 16.97 4.686 4.687 12.284 4.687 16.97 0 4.687-4.685 4.687-12.283 0-16.97zm-35.74-7.704c0-6.627-5.372-12-12-12-6.626 0-12 5.373-12 12s5.374 12 12 12c6.628 0 12-5.373 12-12zm-19.823-30.72c4.687-4.686 4.687-12.284 0-16.97-4.686-4.686-12.284-4.686-16.97 0-4.687 4.686-4.687 12.284 0 16.97 4.686 4.687 12.284 4.687 16.97 0z"
+    }, n.a.createElement("animateTransform", {
+      attributeName: "transform",
+      type: "rotate",
+      from: "0 67 67",
+      to: "360 67 67",
+      dur: "8s",
+      repeatCount: "indefinite"
+    })));
+  };
+  function h() {
+    return (h = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function O(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  g.propTypes = {
+    className: c.a.string
+  }, g.defaultProps = {
+    className: void 0
+  };
+  var E = function (e) {
+    var t = e.className,
+      a = O(e, ["className"]);
+    return n.a.createElement("svg", h({
+      width: 105,
+      height: 105,
+      fill: "#fff",
+      viewBox: "0 0 105 105",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("circle", {
+      cx: 12.5,
+      cy: 12.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 12.5,
+      cy: 52.5,
+      r: 12.5,
+      fillOpacity: .5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "100ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 52.5,
+      cy: 12.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "300ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 52.5,
+      cy: 52.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "600ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 92.5,
+      cy: 12.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "800ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 92.5,
+      cy: 52.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "400ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 12.5,
+      cy: 92.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "700ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 52.5,
+      cy: 92.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "500ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 92.5,
+      cy: 92.5,
+      r: 12.5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "200ms",
+      dur: "1s",
+      values: "1;.2;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })));
+  };
+  function N() {
+    return (N = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function x(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  E.propTypes = {
+    className: c.a.string
+  }, E.defaultProps = {
+    className: void 0
+  };
+  var j = function (e) {
+    var t = e.className,
+      a = x(e, ["className"]);
+    return n.a.createElement("svg", N({
+      width: 140,
+      height: 64,
+      fill: "#fff",
+      viewBox: "0 0 140 64",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("path", {
+      d: "M30.262 57.02L7.195 40.723c-5.84-3.976-7.56-12.06-3.842-18.063 3.715-6 11.467-7.65 17.306-3.68l4.52 3.76 2.6-5.274c3.717-6.002 11.47-7.65 17.305-3.68 5.84 3.97 7.56 12.054 3.842 18.062L34.49 56.118c-.897 1.512-2.793 1.915-4.228.9z",
+      fillOpacity: .5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.4s",
+      values: "0.5;1;0.5",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("path", {
+      d: "M105.512 56.12l-14.44-24.272c-3.716-6.008-1.996-14.093 3.843-18.062 5.835-3.97 13.588-2.322 17.306 3.68l2.6 5.274 4.52-3.76c5.84-3.97 13.592-2.32 17.307 3.68 3.718 6.003 1.998 14.088-3.842 18.064L109.74 57.02c-1.434 1.014-3.33.61-4.228-.9z",
+      fillOpacity: .5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0.7s",
+      dur: "1.4s",
+      values: "0.5;1;0.5",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("path", {
+      d: "M67.408 57.834l-23.01-24.98c-5.864-6.15-5.864-16.108 0-22.248 5.86-6.14 15.37-6.14 21.234 0L70 16.168l4.368-5.562c5.863-6.14 15.375-6.14 21.235 0 5.863 6.14 5.863 16.098 0 22.247l-23.007 24.98c-1.43 1.556-3.757 1.556-5.188 0z"
+    }));
+  };
+  function w() {
+    return (w = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function C(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  j.propTypes = {
+    className: c.a.string
+  }, j.defaultProps = {
+    className: void 0
+  };
+  var M = function (e) {
+    var t = e.className,
+      a = C(e, ["className"]);
+    return n.a.createElement("svg", w({
+      width: 38,
+      height: 38,
+      stroke: "#fff",
+      viewBox: "0 0 38 38",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("g", {
+      transform: "translate(1 1)",
+      strokeWidth: 2,
+      fill: "none",
+      fillRule: "evenodd"
+    }, n.a.createElement("circle", {
+      strokeOpacity: .5,
+      cx: 18,
+      cy: 18,
+      r: 18
+    }), n.a.createElement("path", {
+      d: "M36 18c0-9.94-8.06-18-18-18"
+    }, n.a.createElement("animateTransform", {
+      attributeName: "transform",
+      type: "rotate",
+      from: "0 18 18",
+      to: "360 18 18",
+      dur: "1s",
+      repeatCount: "indefinite"
+    }))));
+  };
+  function P() {
+    return (P = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function k(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  M.propTypes = {
+    className: c.a.string
+  }, M.defaultProps = {
+    className: void 0
+  };
+  var S = function (e) {
+    var t = e.className,
+      a = k(e, ["className"]);
+    return n.a.createElement("svg", P({
+      width: 44,
+      height: 44,
+      stroke: "#fff",
+      viewBox: "0 0 44 44",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("g", {
+      fill: "none",
+      fillRule: "evenodd",
+      strokeWidth: 2
+    }, n.a.createElement("circle", {
+      cx: 22,
+      cy: 22,
+      r: 1
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      begin: "0s",
+      dur: "1.8s",
+      values: "1; 20",
+      calcMode: "spline",
+      keyTimes: "0; 1",
+      keySplines: "0.165, 0.84, 0.44, 1",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "stroke-opacity",
+      begin: "0s",
+      dur: "1.8s",
+      values: "1; 0",
+      calcMode: "spline",
+      keyTimes: "0; 1",
+      keySplines: "0.3, 0.61, 0.355, 1",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 22,
+      cy: 22,
+      r: 1
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      begin: "-0.9s",
+      dur: "1.8s",
+      values: "1; 20",
+      calcMode: "spline",
+      keyTimes: "0; 1",
+      keySplines: "0.165, 0.84, 0.44, 1",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "stroke-opacity",
+      begin: "-0.9s",
+      dur: "1.8s",
+      values: "1; 0",
+      calcMode: "spline",
+      keyTimes: "0; 1",
+      keySplines: "0.3, 0.61, 0.355, 1",
+      repeatCount: "indefinite"
+    }))));
+  };
+  function T() {
+    return (T = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function _(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  S.propTypes = {
+    className: c.a.string
+  }, S.defaultProps = {
+    className: void 0
+  };
+  var I = function (e) {
+    var t = e.className,
+      a = _(e, ["className"]);
+    return n.a.createElement("svg", T({
+      width: 45,
+      height: 45,
+      stroke: "#fff",
+      viewBox: "0 0 45 45",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("g", {
+      fill: "none",
+      fillRule: "evenodd",
+      transform: "translate(1 1)",
+      strokeWidth: 2
+    }, n.a.createElement("circle", {
+      cx: 22,
+      cy: 22,
+      r: 6,
+      strokeOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      begin: "1.5s",
+      dur: "3s",
+      values: "6;22",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "stroke-opacity",
+      begin: "1.5s",
+      dur: "3s",
+      values: "1;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "stroke-width",
+      begin: "1.5s",
+      dur: "3s",
+      values: "2;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 22,
+      cy: 22,
+      r: 6,
+      strokeOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      begin: "3s",
+      dur: "3s",
+      values: "6;22",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "stroke-opacity",
+      begin: "3s",
+      dur: "3s",
+      values: "1;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "stroke-width",
+      begin: "3s",
+      dur: "3s",
+      values: "2;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 22,
+      cy: 22,
+      r: 8
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      begin: "0s",
+      dur: "1.5s",
+      values: "6;1;2;3;4;5;6",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }))));
+  };
+  function z() {
+    return (z = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function B(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  I.propTypes = {
+    className: c.a.string
+  }, I.defaultProps = {
+    className: void 0
+  };
+  var R = function (e) {
+    var t = e.className,
+      a = B(e, ["className"]);
+    return n.a.createElement("svg", z({
+      width: 58,
+      height: 58,
+      viewBox: "0 0 58 58",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("g", {
+      transform: "translate(2 1)",
+      stroke: "#FFF",
+      strokeWidth: 1.5,
+      fill: "#fff",
+      fillRule: "evenodd"
+    }, n.a.createElement("circle", {
+      cx: 42.601,
+      cy: 11.462,
+      r: 5
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "1;0;0;0;0;0;0;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 49.063,
+      cy: 27.063,
+      r: 5,
+      fillOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "0;1;0;0;0;0;0;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 42.601,
+      cy: 42.663,
+      r: 5,
+      fillOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "0;0;1;0;0;0;0;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 27,
+      cy: 49.125,
+      r: 5,
+      fillOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "0;0;0;1;0;0;0;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 11.399,
+      cy: 42.663,
+      r: 5,
+      fillOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "0;0;0;0;1;0;0;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 4.938,
+      cy: 27.063,
+      r: 5,
+      fillOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "0;0;0;0;0;1;0;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 11.399,
+      cy: 11.462,
+      r: 5,
+      fillOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "0;0;0;0;0;0;1;0",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 27,
+      cy: 5,
+      r: 5,
+      fillOpacity: 0
+    }, n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      begin: "0s",
+      dur: "1.3s",
+      values: "0;0;0;0;0;0;0;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }))));
+  };
+  function F() {
+    return (F = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function W(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  R.propTypes = {
+    className: c.a.string
+  }, R.defaultProps = {
+    className: void 0
+  };
+  var L = function (e) {
+    var t = e.className,
+      a = W(e, ["className"]);
+    return n.a.createElement("svg", F({
+      width: 38,
+      height: 38,
+      viewBox: "0 0 38 38",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("defs", null, n.a.createElement("linearGradient", {
+      x1: "8.042%",
+      y1: "0%",
+      x2: "65.682%",
+      y2: "23.865%",
+      id: "prefix__a"
+    }, n.a.createElement("stop", {
+      stopColor: "#fff",
+      stopOpacity: 0,
+      offset: "0%"
+    }), n.a.createElement("stop", {
+      stopColor: "#fff",
+      stopOpacity: .631,
+      offset: "63.146%"
+    }), n.a.createElement("stop", {
+      stopColor: "#fff",
+      offset: "100%"
+    }))), n.a.createElement("g", {
+      transform: "translate(1 1)",
+      fill: "none",
+      fillRule: "evenodd"
+    }, n.a.createElement("path", {
+      d: "M36 18c0-9.94-8.06-18-18-18",
+      stroke: "url(#prefix__a)",
+      strokeWidth: 2
+    }, n.a.createElement("animateTransform", {
+      attributeName: "transform",
+      type: "rotate",
+      from: "0 18 18",
+      to: "360 18 18",
+      dur: "0.9s",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      fill: "#fff",
+      cx: 36,
+      cy: 18,
+      r: 1
+    }, n.a.createElement("animateTransform", {
+      attributeName: "transform",
+      type: "rotate",
+      from: "0 18 18",
+      to: "360 18 18",
+      dur: "0.9s",
+      repeatCount: "indefinite"
+    }))));
+  };
+  function D() {
+    return (D = Object.assign || function (e) {
+      for (var t = 1; t < arguments.length; t++) {
+        var a = arguments[t];
+        for (var r in a) Object.prototype.hasOwnProperty.call(a, r) && (e[r] = a[r]);
+      }
+      return e;
+    }).apply(this, arguments);
+  }
+  function q(e, t) {
+    if (null == e) return {};
+    var a,
+      r,
+      n = function (e, t) {
+        if (null == e) return {};
+        var a,
+          r,
+          n = {},
+          i = Object.keys(e);
+        for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || (n[a] = e[a]);
+        return n;
+      }(e, t);
+    if (Object.getOwnPropertySymbols) {
+      var i = Object.getOwnPropertySymbols(e);
+      for (r = 0; r < i.length; r++) a = i[r], t.indexOf(a) >= 0 || Object.prototype.propertyIsEnumerable.call(e, a) && (n[a] = e[a]);
+    }
+    return n;
+  }
+  L.propTypes = {
+    className: c.a.string
+  }, L.defaultProps = {
+    className: void 0
+  };
+  var A = function (e) {
+    var t = e.className,
+      a = q(e, ["className"]);
+    return n.a.createElement("svg", D({
+      width: 120,
+      height: 30,
+      fill: "#fff",
+      viewBox: "0 0 120 30",
+      className: "svg-loaders-svg".concat(t ? " ".concat(t) : "")
+    }, a), n.a.createElement("circle", {
+      cx: 15,
+      cy: 15,
+      r: 15
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      from: 15,
+      to: 15,
+      begin: "0s",
+      dur: "0.8s",
+      values: "15;9;15",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      from: 1,
+      to: 1,
+      begin: "0s",
+      dur: "0.8s",
+      values: "1;.5;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 60,
+      cy: 15,
+      r: 9,
+      fillOpacity: .3
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      from: 9,
+      to: 9,
+      begin: "0s",
+      dur: "0.8s",
+      values: "9;15;9",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      from: .5,
+      to: .5,
+      begin: "0s",
+      dur: "0.8s",
+      values: ".5;1;.5",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })), n.a.createElement("circle", {
+      cx: 105,
+      cy: 15,
+      r: 15
+    }, n.a.createElement("animate", {
+      attributeName: "r",
+      from: 15,
+      to: 15,
+      begin: "0s",
+      dur: "0.8s",
+      values: "15;9;15",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    }), n.a.createElement("animate", {
+      attributeName: "fill-opacity",
+      from: 1,
+      to: 1,
+      begin: "0s",
+      dur: "0.8s",
+      values: "1;.5;1",
+      calcMode: "linear",
+      repeatCount: "indefinite"
+    })));
+  };
+  A.propTypes = {
+    className: c.a.string
+  }, A.defaultProps = {
+    className: void 0
+  }, a.d(t, "Audio", function () {
+    return s;
+  }), a.d(t, "BallTriangle", function () {
+    return m;
+  }), a.d(t, "Bars", function () {
+    return y;
+  }), a.d(t, "Circles", function () {
+    return g;
+  }), a.d(t, "Grid", function () {
+    return E;
+  }), a.d(t, "Hearts", function () {
+    return j;
+  }), a.d(t, "Oval", function () {
+    return M;
+  }), a.d(t, "Puff", function () {
+    return S;
+  }), a.d(t, "Rings", function () {
+    return I;
+  }), a.d(t, "SpinningCircles", function () {
+    return R;
+  }), a.d(t, "TailSpin", function () {
+    return L;
+  }), a.d(t, "ThreeDots", function () {
+    return A;
+  });
+}]);
+
+const React$b = BdApi.React;
+function PopoutPKBadge$1({
+  profileMap,
+  userHash,
+  profile
+}) {
+  const status = profile.status;
+  let onClick = function () {
+    profileMap.update(userHash, function (profile) {
+      profile.status = ProfileStatus.Stale;
+      return profile;
+    });
+  };
+  const linkStyle = {
+    color: '#ffffff'
+  };
+  let content = 'PK';
+  if ([ProfileStatus.Updating, ProfileStatus.Requesting, ProfileStatus.Stale].includes(status)) {
+    let dotstyle = {
+      height: '.4em',
+      width: '100%',
+      display: 'inline',
+      'vertical-align': 'top',
+      'padding-top': '0.55em'
+    };
+    content = /*#__PURE__*/React$b.createElement(dist.ThreeDots, {
+      style: dotstyle
+    });
+  }
+  return /*#__PURE__*/React$b.createElement("span", {
+    className: "botTagCozy_c19a55 botTag_c19a55 botTagRegular__82f07 botTag__82f07 rem__82f07"
+  }, /*#__PURE__*/React$b.createElement("div", {
+    className: "botText__82f07"
+  }, /*#__PURE__*/React$b.createElement("a", {
+    style: linkStyle,
+    onClick: onClick
+  }, content)));
+}
+
+const Webpack$1 = BdApi.Webpack;
+const GuildMemberStore = Webpack$1.getStore('GuildMemberStore');
+const React$a = BdApi.React;
+function normalize(str) {
+  return fix(str).normalize('NFD');
+}
+function getServername(username, tag) {
+  if (!tag || tag.length === 0) {
+    return null;
+  }
+  username = normalize(username);
+  tag = normalize(tag);
+  let username_len = username.length;
+  let tag_len = tag.length + 1; // include the space as part of the tag
+
+  if (username.endsWith(tag)) {
+    return username.slice(0, username_len - tag_len);
+  } else {
+    return null;
+  }
+}
+function getUsername(useServerNames, author, profile) {
+  let username = normalize(author.username_real ?? author.username.slice());
+  let tag = normalize(profile.tag ?? '');
+  if (useServerNames) {
+    let servername = getServername(username, tag);
+    if (servername) {
+      // we can seperate servername and tag
+      return {
+        username: servername,
+        memberTag: tag
+      };
+    } else {
+      // most likely using a servertag, treat the whole thing as the username
+      return {
+        username,
+        memberTag: ''
+      };
+    }
+  } else {
+    return {
+      username: normalize(profile.name),
+      memberTag: tag
+    };
+  }
+}
+function NameSegment({
+  colour,
+  name
+}) {
+  return /*#__PURE__*/React$a.createElement("span", {
+    className: "username_c19a55 pk-name-segment",
+    style: {
+      color: colour
+    }
+  }, name);
+}
+function getColour(colourPref, member, guildId, settings, defaultSystemColourToMemberColour) {
+  let colour;
+  switch (colourPref) {
+    case ColourPreference.Member:
+      colour = member.color ?? member.system_color;
+      break;
+    case ColourPreference.System:
+      if (defaultSystemColourToMemberColour) {
+        colour = member.system_color ?? member.color;
+      } else {
+        colour = member.system_color;
+      }
+      break;
+    case ColourPreference.Role:
+      colour = GuildMemberStore.getMember(guildId, member.sender)?.colorString;
+      break;
+    default:
+      colour = null;
+      break;
+  }
+  let {
+    doContrastTest,
+    contrastTestColour,
+    contrastThreshold
+  } = settings;
+  if (colour && acceptableContrast(colour, doContrastTest, contrastTestColour, contrastThreshold)) {
+    return colour;
+  } else {
+    return null;
+  }
+}
+function createHeaderChildren(message, guildId, settings, profileMap, profile, userHash, onClickUsername) {
+  let {
+    memberColourPref,
+    tagColourPref
+  } = settings;
+  let {
+    username,
+    memberTag
+  } = getUsername(settings.useServerNames, message.author, profile);
+  let memberColour = getColour(memberColourPref, profile, guildId, settings, true);
+  let tagColour = getColour(tagColourPref, profile, guildId, settings, false);
+  let doSysTag = memberTag && memberTag.length > 0;
+  return [/*#__PURE__*/React$a.createElement("span", {
+    className: "username_c19a55 pk-name",
+    onClick: onClickUsername
+  }, /*#__PURE__*/React$a.createElement(NameSegment, {
+    colour: memberColour,
+    name: username
+  }), doSysTag ? ' ' : null, doSysTag ? /*#__PURE__*/React$a.createElement(NameSegment, {
+    colour: tagColour,
+    name: memberTag
+  }) : null), /*#__PURE__*/React$a.createElement(PopoutPKBadge$1, {
+    profileMap: profileMap,
+    userHash: userHash,
+    profile: profile
+  })];
+}
+function ColorMessageHeader({
+  settings,
+  profileMap,
+  profile,
+  userHash,
+  messageHeader,
+  message,
+  guildId,
+  onClickUsername
+}) {
+  return {
+    ...messageHeader,
+    props: {
+      ...messageHeader.props,
+      children: [createHeaderChildren(message, guildId, settings, profileMap, profile, userHash, onClickUsername),
+      /*#__PURE__*/
+      // Triggering the popout with correct position is hard, so we just leave the original
+      // header here (but hide it using CSS) so the popout can take its position.
+      React$a.createElement("div", {
+        className: "pk-hidden"
+      }, messageHeader.props.children)]
+    }
+  };
+}
+
+const React$9 = BdApi.React;
+function LoadingMessageHeader({
+  messageHeader,
+  profile,
+  profileMap,
+  userHash
+}) {
+  return {
+    ...messageHeader,
+    props: {
+      ...messageHeader.props,
+      children: [messageHeader.props.children[4], /*#__PURE__*/React$9.createElement(PopoutPKBadge$1, {
+        profileMap: profileMap,
+        userHash: userHash,
+        profile: profile
+      })]
+    }
+  };
+}
+
+const React$8 = BdApi.React;
+function MessageHeaderProxy({
+  settingsCell,
+  profileMap,
+  enabledCell,
+  messageHeader,
+  message,
+  guildId,
+  onClickUsername
+}) {
+  let [settings] = hookupValueCell(settingsCell);
+  let [profile] = hookupProfile(profileMap, message.author);
+  let [enabled] = hookupValueCell(enabledCell);
+  if (!enabled || !isProxiedMessage(message)) {
+    return messageHeader;
+  }
+  updateProfile(message, profileMap);
+  let userHash = getUserHash(message.author);
+  if (profile && (profile.status === ProfileStatus.Done || profile.status === ProfileStatus.Updating)) {
+    return /*#__PURE__*/React$8.createElement(ColorMessageHeader, {
+      settings: settings,
+      profileMap: profileMap,
+      profile: profile,
+      userHash: userHash,
+      messageHeader: messageHeader,
+      message: message,
+      guildId: guildId,
+      onClickUsername: onClickUsername
+    });
+  } else if (!profile || profile.status === ProfileStatus.Requesting) {
+    return /*#__PURE__*/React$8.createElement(LoadingMessageHeader, {
+      messageHeader: messageHeader,
+      profile: {
+        status: ProfileStatus.Requesting
+      },
+      profileMap: profileMap,
+      userHash: userHash
+    });
+  } else {
+    return messageHeader;
+  }
+}
+
+const React$7 = BdApi.React;
+function getHeaderId(label) {
+  return /message-username-(?<headerId>\d+)/.exec(label)?.groups?.headerId;
+}
+function hookupUnblocked(unblockedMap, author) {
+  let header = getHeaderId(author);
+  const [unblocked, setUnblocked] = React$7.useState(unblockedMap.get(header) ?? []);
+  unblockedMap.addListener(function (key, value) {
+    if (key === header) {
+      setUnblocked(value);
+    }
+  });
+  return [[...unblocked], setUnblocked];
+}
+function getUnblocked(unblockedMap, message, messageNode, label) {
+  const [unblocked] = hookupUnblocked(unblockedMap, label);
+  if (!unblocked.find(({
+    id
+  }) => id === message.id)) {
+    unblocked.push({
+      id: message.id,
+      node: messageNode,
+      timestamp: message.timestamp
+    });
+    unblocked.sort((a, b) => a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0);
+    unblockedMap.set(getHeaderId(label), unblocked);
+  }
+  return unblocked.map(({
+    node
+  }) => node);
+}
+function XIcon() {
+  return /*#__PURE__*/React$7.createElement("div", {
+    className: "iconContainer__235ca"
+  }, /*#__PURE__*/React$7.createElement("svg", {
+    "aria-hidden": "true",
+    role: "img",
+    className: "blockedIcon__7a70a",
+    width: "24",
+    height: "24",
+    viewBox: "0 0 24 24"
+  }, /*#__PURE__*/React$7.createElement("path", {
+    fill: "currentColor",
+    d: "M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z"
+  })));
+}
+function BlockedMessage({
+  unblockedMap,
+  message,
+  messageNode,
+  label,
+  compact
+}) {
+  const [expanded, setExpanded] = React$7.useState(false);
+  const unblocked = getUnblocked(unblockedMap, message, messageNode, label);
+  if (compact) {
+    return null;
+  }
+  return /*#__PURE__*/React$7.createElement("div", {
+    className: "groupStart__5126c"
+  }, /*#__PURE__*/React$7.createElement("div", {
+    className: "wrapper_c19a55 cozy_c19a55 zalgo_c19a55",
+    role: "article"
+  }, /*#__PURE__*/React$7.createElement("div", {
+    className: "contents_c19a55"
+  }, /*#__PURE__*/React$7.createElement("div", {
+    className: "blockedSystemMessage__7a70a container__235ca cozy__235ca"
+  }, /*#__PURE__*/React$7.createElement(XIcon, null), /*#__PURE__*/React$7.createElement("div", {
+    className: "content__235ca"
+  }, /*#__PURE__*/React$7.createElement("div", {
+    className: "blockedMessageText__7a70a"
+  }, unblocked.length, " blocked ", unblocked.length === 1 ? 'message' : 'messages', " \u2014", ' ', /*#__PURE__*/React$7.createElement("span", {
+    className: "blockedAction__7a70a",
+    role: "button",
+    tabIndex: "0",
+    onClick: () => setExpanded(!expanded)
+  }, expanded ? 'Collapse' : 'Show', " ", unblocked.length === 1 ? 'message' : 'messages')))))), expanded ? unblocked : null);
+}
+
+let isBlocked = BdApi.Webpack.getByKeys('isBlocked').isBlocked;
+const React$6 = BdApi.React;
+function isBlockedProfile(profile) {
+  return profile?.sender && isBlocked(profile.sender);
+}
+function MessageProxyInner({
+  profileMap,
+  unblockedMap,
+  messageNode,
+  message,
+  label,
+  compact
+}) {
+  let [profile] = hookupProfile(profileMap, message.author);
+  if (isBlockedProfile(profile)) {
+    return /*#__PURE__*/React$6.createElement(BlockedMessage, {
+      unblockedMap: unblockedMap,
+      message: message,
+      messageNode: messageNode,
+      label: label,
+      compact: compact
+    });
+    // return messageNode;
+  } else {
+    return messageNode;
+  }
+}
+function MessageProxy({
+  profileMap,
+  enabledCell,
+  unblockedMap,
+  messageNode,
+  message,
+  label,
+  compact
+}) {
+  let [enabled] = hookupValueCell(enabledCell);
+  if (enabled && message) {
+    return /*#__PURE__*/React$6.createElement(MessageProxyInner, {
+      profileMap: profileMap,
+      unblockedMap: unblockedMap,
+      messageNode: messageNode,
+      message: message,
+      label: label,
+      compact: compact
+    });
+  } else {
+    return messageNode;
+  }
+}
+
+const MessageContent = BdApi.Webpack.getModule(m => {
+  let s = m?.type?.toString();
+  return s && s.includes('messageContent') && s.includes('SEND_FAILED');
+});
+const [MessageHeader, messageHeader] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.byStrings('message', 'clanTagChiplet'));
+const [Message, blocker] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.byStrings('.cozy', '.hasReply', '.hasThread', '.isSystemMessage'));
+const React$5 = BdApi.React;
+function patchMessageContent(settings, profileMap, enabled) {
+  BdApi.Patcher.instead(pluginName, MessageContent, 'type', function (ctx, [props], f) {
+    return /*#__PURE__*/React$5.createElement(MessageContentProxy, {
+      settingsCell: settings,
+      profileMap: profileMap,
+      enabledCell: enabled,
+      messageContent: f.call(ctx, props),
+      message: props.message
+    });
+  });
+}
+function patchMessageHeader(settings, profileMap, enabled) {
+  BdApi.Patcher.instead(pluginName, MessageHeader, messageHeader, function (ctx, [props], f) {
+    // Props can sometimes be undefined.
+    if (!props) {
+      return;
+    }
+    return /*#__PURE__*/React$5.createElement(MessageHeaderProxy, {
+      settingsCell: settings,
+      profileMap: profileMap,
+      enabledCell: enabled,
+      messageHeader: f(props),
+      message: props.message,
+      guildId: props.channel.guild_id,
+      onClickUsername: props.onClick
+    });
+  });
+}
+function patchMessage(profileMap, enabled) {
+  let unblockedMap = new MapCell({});
+  BdApi.Patcher.instead(pluginName, Message, blocker, function (ctx, [props], f) {
+    return /*#__PURE__*/React$5.createElement(MessageProxy, {
+      profileMap: profileMap,
+      enabledCell: enabled,
+      unblockedMap: unblockedMap,
+      messageNode: f.call(ctx, props),
+      message: props.childrenMessageContent?.props?.message,
+      label: props['aria-labelledby'],
+      compact: props?.childrenHeader?.props?.compact
+    });
+  });
+}
+
+const Webpack = BdApi.Webpack;
+const MessageActions = Webpack.getByKeys('jumpToMessage', '_sendMessage');
+const MessageStore$1 = Webpack.getStore('MessageStore');
+const ChannelStore = Webpack.getStore('ChannelStore');
+function patchEditMenuItem() {
+  // Add edit menu item to proxied messages.
+  return BdApi.ContextMenu.patch('message', (res, props) => {
+    const {
+      message
+    } = props;
+    if (!message || !isProxiedMessage(message) || !Array.isArray(res?.props?.children)) {
+      return res;
+    }
+    res.props.children[2].props.children.splice(4, 0, BdApi.ContextMenu.buildMenuChildren([{
+      id: 'pk-edit',
+      label: 'Edit Proxied Message',
+      action: () => {
+        MessageActions.startEditMessage(message.channel_id, message.id, message.content);
+      }
+    }]));
+  });
+}
+function patchEditAction() {
+  // Patch edit actions on proxied messages to send a pluralkit command.
+  BdApi.Patcher.instead(pluginName, MessageActions, 'editMessage', BdApi.Utils.debounce(function (ctx, [channel_id, message_id, message], original) {
+    if (isProxiedMessage(MessageStore$1.getMessage(channel_id, message_id))) {
+      let {
+        content
+      } = message;
+      let channel = ChannelStore.getChannel(channel_id);
+      let guild_id = channel.guild_id;
+      let str = 'pk;e https://discord.com/channels/' + guild_id + '/' + channel_id + '/' + message_id + ' ' + content;
+      MessageActions.sendMessage(channel_id, {
+        reaction: false,
+        content: str
+      });
+    } else {
+      return original(channel_id, message_id, message);
+    }
+  }, 100));
+}
+
+var img = "data:image/png;base64,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";
+
+const React$4 = BdApi.React;
+function title() {
+  let logo = /*#__PURE__*/React$4.createElement("img", {
+    src: img,
+    style: {
+      maxWidth: '100%',
+      height: 'auto'
+    }
+  });
+  let subtitle = /*#__PURE__*/React$4.createElement("p", {
+    style: {
+      textAlign: 'center',
+      color: 'var(--header-primary)',
+      width: '100%'
+    }
+  }, "PluralKit integration for BetterDiscord", /*#__PURE__*/React$4.createElement("br", null), "- by", ' ', /*#__PURE__*/React$4.createElement("b", null, /*#__PURE__*/React$4.createElement("span", {
+    style: {
+      color: '#ff002a'
+    }
+  }, "ash taylor")), ' ', "-");
+  return {
+    type: 'custom',
+    id: 'logo',
+    name: '',
+    note: '',
+    value: null,
+    children: /*#__PURE__*/React$4.createElement("div", null, logo, subtitle)
+  };
+}
+function doColourText(settings) {
+  return {
+    type: 'switch',
+    id: 'doColourText',
+    name: 'Colored proxy text',
+    note: '',
+    value: settings.get().doColourText
+  };
+}
+function memberColourPref(settings) {
+  return {
+    type: 'dropdown',
+    id: 'memberColourPref',
+    name: 'Default member name color',
+    note: '',
+    value: settings.get().memberColourPref,
+    options: [{
+      label: 'Member',
+      value: ColourPreference.Member
+    }, {
+      label: 'System',
+      value: ColourPreference.System
+    }, {
+      label: 'Role',
+      value: ColourPreference.Role
+    }, {
+      label: 'Theme',
+      value: ColourPreference.Theme
+    }]
+  };
+}
+function tagColourPref(settings) {
+  return {
+    type: 'dropdown',
+    id: 'tagColourPref',
+    name: 'Default system tag color',
+    note: '',
+    value: settings.get().tagColourPref,
+    options: [{
+      label: 'Member',
+      value: ColourPreference.Member
+    }, {
+      label: 'System',
+      value: ColourPreference.System
+    }, {
+      label: 'Role',
+      value: ColourPreference.Role
+    }, {
+      label: 'Theme',
+      value: ColourPreference.Theme
+    }]
+  };
+}
+function useServerNames(settings) {
+  return {
+    type: 'switch',
+    id: 'useServerNames',
+    name: 'Use servernames',
+    note: '',
+    value: settings.get().useServerNames
+  };
+}
+function preferencesPanel(settings) {
+  return {
+    type: 'category',
+    id: 'preferencesPanel',
+    name: 'Preferences',
+    collapsible: true,
+    shown: false,
+    settings: [doColourText(settings), useServerNames(settings), memberColourPref(settings), tagColourPref(settings)]
+  };
+}
+function doDisableBanners(settings) {
+  return {
+    type: 'switch',
+    id: 'doDisableBanners',
+    name: 'Disable banners',
+    note: '',
+    value: settings.get().doDisableBanners
+  };
+}
+function doContrastTest(settings) {
+  return {
+    type: 'switch',
+    id: 'doContrastTest',
+    name: 'Enable text constrast test',
+    note: "Uses the theme's default color if the proxy's contrast is too low",
+    value: settings.get().doContrastTest
+  };
+}
+function contrastTestColour(settings) {
+  return {
+    type: 'color',
+    id: 'contrastTestColour',
+    name: 'Contrast test color',
+    note: 'The background color that proxy text will be tested against (black for dark themes, white for light themes)',
+    value: settings.get().contrastTestColour
+  };
+}
+function contrastThreshold(settings) {
+  return {
+    type: 'slider',
+    id: 'contrastThreshold',
+    name: 'Contrast ratio threshold',
+    note: 'Minimum contrast ratio for proxy colors (default: 3)',
+    value: settings.get().contrastThreshold,
+    min: 1,
+    max: 21,
+    markers: [1, 2, 3, 4.5, 7, 14, 21]
+  };
+}
+function accessibilityPanel(settings) {
+  return {
+    type: 'category',
+    id: 'accessibilityPanel',
+    name: 'Accessibility',
+    collapsible: true,
+    shown: false,
+    settings: [doDisableBanners(settings), doContrastTest(settings), contrastTestColour(settings), contrastThreshold(settings)]
+  };
+}
+function cachePanel(profileMap) {
+  let resetCacheBtn = /*#__PURE__*/React$4.createElement("button", {
+    className: "button_dd4f85 lookFilled_dd4f85 colorBrand_dd4f85 sizeSmall_dd4f85 grow_dd4f85",
+    style: {
+      textAlign: 'center',
+      width: '100%'
+    },
+    onClick: () => profileMap.clear()
+  }, "Delete Cache");
+  return {
+    type: 'category',
+    id: 'cachePanel',
+    name: 'Cache',
+    collapsible: true,
+    shown: false,
+    settings: [{
+      type: 'custom',
+      id: 'logo',
+      name: '',
+      note: '',
+      value: null,
+      children: resetCacheBtn
+    }]
+  };
+}
+function settingsPanel(settings, profileMap) {
+  return BdApi.UI.buildSettingsPanel({
+    settings: [title(), preferencesPanel(settings), accessibilityPanel(settings), cachePanel(profileMap)],
+    onChange: (_category, id, value) => settings.update(s => Object.assign({}, s, {
+      [id]: value
+    }))
+  });
+}
+
+const {
+  semverCompare
+} = BdApi.Utils;
+async function showUpdateNotice(url) {
+  let button = document.createElement('button');
+  button.label = 'Check it out!';
+  button.onClick = function () {
+    require('electron').shell.openExternal(url);
+  };
+  BdApi.UI.showNotice('Pluralchum has a new update!', {
+    type: 'info',
+    buttons: [button]
+  });
+}
+async function checkForUpdates(currentVersion) {
+  let data = await fetch('https://api.github.com/repos/estroBiologist/pluralchum/releases/latest');
+  if (data.ok) {
+    let latestRelease = await data.json();
+    let latestVersion = latestRelease.tag_name;
+    if (semverCompare(currentVersion, latestVersion) > 0) {
+      showUpdateNotice(latestRelease.html_url);
+    }
+  }
+}
+function upgradeCache(settings, profileMap, currentVersion) {
+  let cacheVersion = settings.get().version;
+  if (!cacheVersion || semverCompare(cacheVersion, currentVersion) > 0) {
+    settings.update(function (s) {
+      return {
+        ...s,
+        version: currentVersion
+      };
+    });
+    for (const [key, value] of profileMap.entries()) {
+      profileMap.set(key, {
+        ...value,
+        status: ProfileStatus.Stale
+      });
+    }
+  }
+}
+
+const React$3 = BdApi.React;
+function PopoutPKBadge() {
+  return /*#__PURE__*/React$3.createElement("span", {
+    className: "botTagRegular__82f07 botTag__82f07 px__82f07"
+  }, /*#__PURE__*/React$3.createElement("div", {
+    className: "botText__82f07"
+  }, "PK"));
+}
+
+const parseBio = BdApi.Webpack.getByKeys('parseBioReact');
+function Bio({
+  content
+}) {
+  try {
+    const parserHelper = BdApi.Webpack.getByKeys('reactParserFor', 'createReactRules');
+    let newRules = parserHelper.defaultRules;
+
+    //modified regex matcher, and link match regex from simple-markdown, replaces link match function to override Discord's 'allowLinks' check
+    // Creates a match function for an inline scoped element from a regex
+    var inlineRegex = function (regex) {
+      var match = function (source, state) {
+        if (state.inline) {
+          return regex.exec(source);
+        } else {
+          return null;
+        }
+      };
+      match.regex = regex;
+      return match;
+    };
+    var LINK_INSIDE = '(?:\\[[^\\]]*\\]|[^\\[\\]]|\\](?=[^\\[]*\\]))*';
+    var LINK_HREF_AND_TITLE = '\\s*<?((?:\\([^)]*\\)|[^\\s\\\\]|\\\\.)*?)>?(?:\\s+[\'"]([\\s\\S]*?)[\'"])?\\s*';
+    newRules.link.match = inlineRegex(new RegExp('^\\[(' + LINK_INSIDE + ')\\]\\(' + LINK_HREF_AND_TITLE + '\\)'));
+    let customParser = parserHelper.reactParserFor(newRules);
+    const finalOutput = customParser(content);
+    return finalOutput;
+  } catch (error) {
+    console.warn('[PLURALCHUM] error while generating bio, falling back to default function!');
+    try {
+      const defaultParse = parseBio.parseBioReact(content);
+      return defaultParse;
+    } catch (error) {
+      console.error('[PLURALCHUM] error while generating bio!', error);
+      return 'Error while generating bio!';
+    }
+  }
+}
+
+const React$2 = BdApi.React;
+const markupClass$1 = BdApi.Webpack.getByKeys('markup')?.markup;
+const textClass$1 = BdApi.Webpack.getByKeys('text-sm/normal')['text-sm/normal'];
+const thinClass$1 = BdApi.Webpack.getByKeys('scrollerBase', 'thin')?.thin;
+function DataPanelBio({
+  content
+}) {
+  const scrollerClass = BdApi.Webpack.getByKeys('scroller', 'note')?.scroller;
+  return /*#__PURE__*/React$2.createElement("div", {
+    className: `${scrollerClass} ${thinClass$1}`,
+    style: {
+      overflow: 'hidden scroll',
+      paddingRight: '8px'
+    }
+  }, /*#__PURE__*/React$2.createElement("div", {
+    className: markupClass$1
+  }, /*#__PURE__*/React$2.createElement("div", {
+    className: textClass$1
+  }, /*#__PURE__*/React$2.createElement(Bio, {
+    content: content
+  }))));
+}
+
+const React$1 = BdApi.React;
+const markupClass = BdApi.Webpack.getByKeys('markup')?.markup;
+const textClass = BdApi.Webpack.getByKeys('text-sm/normal')['text-sm/normal'];
+const thinClass = BdApi.Webpack.getByKeys('scrollerBase', 'thin')?.thin;
+function PopoutBio({
+  content
+}) {
+  return /*#__PURE__*/React$1.createElement("div", {
+    className: thinClass,
+    style: {
+      overflow: 'hidden scroll',
+      'max-height': '30vh'
+    }
+  }, /*#__PURE__*/React$1.createElement("div", {
+    className: markupClass
+  }, /*#__PURE__*/React$1.createElement("div", {
+    className: textClass
+  }, /*#__PURE__*/React$1.createElement(Bio, {
+    content: content
+  }))));
+}
+
+const React = BdApi.React;
+const [WebhookPopout, viewWebhookPopout] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.combine(BdApi.Webpack.Filters.byStrings('messageId', 'user', 'openUserProfileModal', 'setPopoutRef'), BdApi.Webpack.Filters.byRegex('^((?!getGuild).)*$')));
+const [BotPopout, viewBotPopout] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.combine(BdApi.Webpack.Filters.byStrings('messageId', 'user', 'openUserProfileModal', 'setPopoutRef', 'currentUser'), BdApi.Webpack.Filters.byRegex('^((?!customStatusPrompt).)*$')));
+const [Avatar, avatar] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.byStrings('avatarSrc', 'avatarDecorationSrc', 'eventHandlers', 'avatarOverride'));
+const [Banner, banner] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.byStrings('bannerSrc'));
+const [UsernameRow, usernameRow] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.byStrings('usernameRow', 'isVerifiedBot'));
+const UserProfileStore = BdApi.Webpack.getModule(BdApi.Webpack.Filters.byStoreName('UserProfileStore'));
+const UserStore = BdApi.Webpack.getModule(BdApi.Webpack.Filters.byStoreName('UserStore'));
+const User = BdApi.Webpack.getByPrototypeKeys('addGuildAvatarHash', 'isLocalBot');
+const MessageStore = BdApi.Webpack.getModule(BdApi.Webpack.Filters.byStoreName('MessageStore'));
+function isValidHttpUrl(string) {
+  let url;
+  try {
+    url = new URL(string);
+  } catch (_) {
+    return false;
+  }
+  return url.protocol === 'http:' || url.protocol === 'https:';
+}
+function patchBotPopout(settings, profileMap) {
+  BdApi.Patcher.instead(pluginName, UserProfileStore, 'getGuildMemberProfile', function (ctx, [userId, guildId], f) {
+    if (userId && typeof userId !== 'string' && userId.userProfile) {
+      return userId.userProfile;
+    } else {
+      return f(userId, guildId);
+    }
+  });
+  BdApi.Patcher.instead(pluginName, UserProfileStore, 'getUserProfile', function (ctx, [userId, guildId], f) {
+    if (userId && typeof userId !== 'string' && userId.userProfile) {
+      return userId.userProfile;
+    } else {
+      return f(userId, guildId);
+    }
+  });
+  BdApi.Patcher.instead(pluginName, UserStore, 'getUser', function (ctx, [userId, guildId], f) {
+    if (userId && typeof userId !== 'string' && userId.user) {
+      return userId.user;
+    } else {
+      return f(userId, guildId);
+    }
+  });
+  BdApi.Patcher.after(pluginName, Avatar, avatar, function (_, [args], ret) {
+    let user = args?.userId?.user;
+    if (user && isValidHttpUrl(user.avatar)) {
+      ret.avatarSrc = user.avatar;
+      ret.avatarPlaceholder = user.avatar;
+    }
+    return ret;
+  });
+  BdApi.Patcher.after(pluginName, Banner, banner, function (_, [{
+    displayProfile
+  }], ret) {
+    if (displayProfile && isValidHttpUrl(displayProfile.banner)) {
+      if (settings.get()?.doDisableBanners) {
+        ret.bannerSrc = undefined;
+        ret.status = 'COMPLETE';
+      } else {
+        ret.bannerSrc = displayProfile.banner;
+      }
+    }
+    return ret;
+  });
+  BdApi.Patcher.instead(pluginName, WebhookPopout, viewWebhookPopout, function (_, [args], f) {
+    let message = MessageStore.getMessage(args.channelId, args.messageId);
+    if (!message) {
+      return f(args);
+    }
+    let userHash = getUserHash(message.author);
+    let profile = profileMap.get(userHash);
+    if (!profile || profile?.status === ProfileStatus.NotPK) {
+      return f(args);
+    }
+    let userProfile = {
+      bio: profile.description ?? '',
+      system_bio: profile.system_description ?? '',
+      userId: args.user.id,
+      guildId: args.guildId,
+      pronouns: profile.pronouns
+    };
+    if (profile.color) {
+      userProfile.accentColor = Number('0x' + profile.color.substring(1));
+    } else {
+      userProfile.accentColor = Number('0x5b63f4');
+    }
+    if (profile.banner) {
+      userProfile.banner = profile.banner;
+    }
+    let user = new User({
+      username: profile.system_name ?? profile.system,
+      globalName: profile.name,
+      bot: true,
+      discriminator: profile.system
+    });
+    user.id = {
+      userProfile,
+      user,
+      isPK: true
+    };
+    if (args.user.avatar) {
+      user.avatar = 'https://cdn.discordapp.com/avatars/' + args.user.id + '/' + args.user.avatar + '.webp';
+    } else {
+      //fallback to default avatar
+      user.avatar = 'https://cdn.discordapp.com/embed/avatars/0.png';
+    }
+    if (BotPopout && viewBotPopout) return BotPopout[viewBotPopout]({
+      ...args,
+      user
+    });else {
+      console.error('[PLURALCHUM] Error, bot popout function is undefined! Falling back to webhook function...');
+      return f({
+        ...args,
+        user
+      });
+    }
+  });
+  BdApi.Patcher.after(pluginName, UsernameRow, usernameRow, function (ctx, [args], ret) {
+    if (args.user?.id?.isPK) {
+      ret.props.children[0].props.children[1] = /*#__PURE__*/React.createElement(PopoutPKBadge, null);
+    }
+    return ret;
+  });
+  BdApi.Webpack.waitForModule(BdApi.Webpack.Filters.byKeys('openUserProfileModal')).then(function (userProfile) {
+    if (userProfile === undefined) {
+      console.error('[PLURALCHUM] Error while patching the user profile modal!');
+      return;
+    }
+    const Dispatcher = BdApi.Webpack.getByKeys('dispatch', 'subscribe');
+    BdApi.Patcher.instead(pluginName, userProfile, 'openUserProfileModal', (ctx, [args], f) => {
+      if (typeof args.userId !== 'string' && args.userId?.isPK) {
+        Dispatcher.dispatch({
+          type: 'USER_PROFILE_MODAL_OPEN',
+          userId: args.userId,
+          appContext: args.appContext
+        });
+        return;
+      }
+      return f(args);
+    });
+  });
+  BdApi.Webpack.waitForModule(BdApi.Webpack.Filters.byStrings('user-bot-profile-overflow-menu', 'BLOCK'), {
+    defaultExport: false
+  }).then(function (OverflowMenu) {
+    if (OverflowMenu === undefined) {
+      console.error('[PLURALCHUM] Error while patching OverflowMenu!');
+      return;
+    }
+    BdApi.Patcher.instead(pluginName, OverflowMenu, 'Z', (ctx, [args], f) => {
+      if (args.user?.id?.isPK) return;
+      return f(args);
+    });
+  });
+
+  //this could potentially be changed to message the system user?
+  const MessageButton = BdApi.Webpack.getByKeys('openPrivateChannel');
+  BdApi.Patcher.instead(pluginName, MessageButton, 'openPrivateChannel', function (ctx, args, f) {
+    if (args[0]?.isPK) {
+      return;
+    }
+    return f(...args);
+  });
+  BdApi.Webpack.waitForModule(BdApi.Webpack.Filters.byStrings('BOT_INFO', 'MUTUAL_GUILDS', 'BOT_DATA_ACCESS'), {
+    defaultExport: false
+  }).then(function (ModalTabBar) {
+    if (ModalTabBar === undefined) {
+      console.error('[PLURALCHUM] Error while patching ModalTabBar!');
+      return;
+    }
+    BdApi.Patcher.instead(pluginName, ModalTabBar, 'Z', (ctx, [args], f) => {
+      if (!args?.id?.isPK) return f(args);
+      const newHeaders = [{
+        section: 'BOT_INFO',
+        text: 'Member Info'
+      }, {
+        section: 'BOT_DATA_ACCESS',
+        text: 'System Info'
+      }];
+      return newHeaders;
+    });
+    console.debug('[PLURALCHUM] patched ModalTabBar');
+  });
+  BdApi.Webpack.waitForModule(BdApi.Webpack.Filters.byStrings('getUserProfile', 'SET_NOTE'), {
+    defaultExport: false
+  }).then(function (UserProfilePanel) {
+    if (UserProfilePanel === undefined) {
+      console.error('[PLURALCHUM] Error while patching UserProfilePanel!');
+      return;
+    }
+    BdApi.Patcher.instead(pluginName, UserProfilePanel, 'Z', (ctx, [args], f) => {
+      if (!args?.user?.id?.isPK) return f(args);
+      return /*#__PURE__*/React.createElement(DataPanelBio, {
+        content: args.user.id.userProfile.bio
+      });
+    });
+  });
+
+  //this will also probably eventually break -- is there a better way to grab this module?
+  BdApi.Webpack.waitForModule(BdApi.Webpack.Filters.byStrings('getUserProfile', 'application', 'helpCenterUrl'), {
+    defaultExport: false
+  }).then(function (BotDataPanel) {
+    if (BotDataPanel === undefined) {
+      console.error('[PLURALCHUM] Error while patching BotDataPanel!');
+      return;
+    }
+    BdApi.Patcher.instead(pluginName, BotDataPanel, 'Z', (ctx, [args], f) => {
+      if (!args?.user?.id?.isPK) return f(args);
+      return /*#__PURE__*/React.createElement(DataPanelBio, {
+        content: args.user.id.userProfile.system_bio
+      });
+    });
+  });
+  const [PopoutBioPatch, popoutBioPatch] = BdApi.Webpack.getWithKey(BdApi.Webpack.Filters.byStrings('viewFullBioDisabled', 'hidePersonalInformation'));
+  BdApi.Patcher.instead(pluginName, PopoutBioPatch, popoutBioPatch, function (_, [args], f) {
+    if (!args?.user?.id?.isPK) {
+      return f(args);
+    }
+    return /*#__PURE__*/React.createElement(PopoutBio, {
+      content: args.bio
+    });
+  });
+}
+
+const version = '2.7.3';
+class Pluralchum {
+  patches = [];
+  start() {
+    this.settings = initializeSettings();
+    console.log('[PLURALCHUM] Loaded settings');
+    this.profileMap = initializeProfileMap();
+    console.log('[PLURALCHUM] Loaded PK data');
+    upgradeCache(this.settings, this.profileMap, version);
+    requireEula(this.settings);
+    this.enabled = new ValueCell(true);
+    patchMessageContent(this.settings, this.profileMap, this.enabled);
+    patchMessageHeader(this.settings, this.profileMap, this.enabled);
+    patchMessage(this.profileMap, this.enabled);
+    this.patches.push(patchEditMenuItem());
+    patchEditAction();
+    patchBotPopout(this.settings, this.profileMap);
+    checkForUpdates(version);
+  }
+  stop() {
+    this.enabled.set(false);
+    for (let i = this.patches.length - 1; i >= 0; i--) this.patches[i]();
+    purgeOldProfiles(this.profileMap);
+    BdApi.Patcher.unpatchAll(pluginName);
+  }
+  getSettingsPanel() {
+    return settingsPanel(this.settings, this.profileMap);
+  }
+  getName() {
+    return pluginName;
+  }
+}
+
+exports.Pluralchum = Pluralchum;

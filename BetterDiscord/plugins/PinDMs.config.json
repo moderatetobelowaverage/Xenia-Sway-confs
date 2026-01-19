@@ -1,0 +1,75 @@
+{
+	"all": {
+		"general": {
+			"channelAmount": true,
+			"pinIcon": true,
+			"unreadAmount": true
+		},
+		"pinned": {
+			"356651443719241750": {
+				"channelList": {
+					"2916252925668936": {
+						"id": "2916252925668936",
+						"name": "Women",
+						"dms": [
+							"1297778191837958206",
+							"1281137204273483776",
+							"1247588572932866119"
+						],
+						"pos": 0,
+						"collapsed": false,
+						"color": [
+							216,
+							130,
+							214,
+							1
+						]
+					},
+					"8409790340867309": {
+						"id": "8409790340867309",
+						"name": "Archive Groups",
+						"dms": [
+							"1384372330633101393",
+							"1353821073380081855",
+							"1415843920298115243",
+							"1405234064272789574",
+							"1387086830536757259",
+							"1371254416945971434",
+							"1331174861292179456",
+							"1322314252165447781",
+							"1127493625236959233",
+							"1269542214908772415",
+							"1240078941633380392",
+							"993086980546109470"
+						],
+						"pos": 1,
+						"collapsed": true,
+						"color": null
+					}
+				}
+			}
+		},
+		"preCategories": {
+			"blocked": {
+				"enabled": false,
+				"collapsed": false
+			},
+			"bots": {
+				"enabled": false,
+				"collapsed": false
+			},
+			"friends": {
+				"enabled": false,
+				"collapsed": false
+			},
+			"groups": {
+				"enabled": true,
+				"collapsed": true
+			}
+		},
+		"recentOrder": {
+			"channelList": false,
+			"guildList": false
+		}
+	}
+}
