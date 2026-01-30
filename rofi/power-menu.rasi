@@ -20,37 +20,37 @@ window {
   border:                   1px;
   border-radius:            0px;
   border-color:             @main-br;
-  background-color:         @main-bg;
+  transparency:             "real";
+  background-color:         @trans;
   children:                 [ mainbox ];
 }
 
 mainbox {
   spacing:                  0;
-  background-color:         @main-br;
+  background-color:         transparent;
   text-color:               @main-fg;
   children:                 [ textbox-custom, listview ];
 }
 
 textbox-custom {
-  font:                     "JetBrainsMono Nerd Font Bold 2";
+  font:                     "JetBrainsMono Nerd Font Bold 8";
   horizontal-align:         0.5;
-  padding:                  0;
+  padding:                  1px 0;
   expand:                   false;
-  background-color:         @select-bg;
-  text-color:               @select-fg;
+  background-color:         transparent;
+  text-color:               @main-fg;
   expand:                   false;
-  // content:                  "  Power";
+  content:                  "  Power";
 }
 
 /* List */
 
 listview {
-  border:                   1px 0 0 0;
   border-radius:            0px;
   border-color:             @main-br;
   lines:                    6;
   padding:                  6px;
-  background-color:         @main-bg;
+  background-color:         transparent;
 }
 
 element {
@@ -61,7 +61,7 @@ element {
 }
 element selected.normal {
   border-radius:            0px;
-  background-color:         @select-bg;
+  background-color:         @blue;
   text-color:               @select-fg;
 }
 element-text {

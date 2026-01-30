@@ -19,13 +19,14 @@ window {
   border:                   1px;
   border-radius:            0px;
   border-color:             @main-br;
-  background-color:         @main-bg;
+  background-color:         @trans;
+  transparency:             "real"; 
   children:                 [ mainbox ];
 }
 
 mainbox {
   spacing:                  0;
-  background-color:         @main-br;
+  background-color:         transparent;
   text-color:               @main-fg;
   children:                 [ textbox-custom, listview, inputbar ];
 }
@@ -35,7 +36,7 @@ textbox-custom {
   horizontal-align:         0.5;
   padding:                  1px 0;
   expand:                   false;
-  background-color:         @main-bg;
+  background-color:         transparent;
   text-color:               @main-fg;
   expand:                   false;
   content:                  "󰤥  Wi-Fi";
@@ -47,7 +48,7 @@ inputbar {
   margin:                   -32px 6px 6px;
   border-radius:            0px;
   spacing:                  inherit;
-  background-color:         @input-bg;
+  background-color:         @main-bg;
   text-color:               inherit;
   children:                 [ prompt, entry ];
 }
@@ -76,7 +77,7 @@ listview {
   cycle:                    false;
   margin:                   0 0 -2px;
   padding:                  2px 6px 40px;
-  background-color:         @main-bg;
+  background-color:         transparent;
 }
 
 element {
@@ -88,7 +89,7 @@ element {
 element selected active,
 element selected normal {
   border-radius:            0px;
-  background-color:         @select-bg;
+  background-color:         @blue;
   text-color:               @select-fg;
 }
 element-text {

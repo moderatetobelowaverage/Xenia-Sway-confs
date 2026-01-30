@@ -18,11 +18,14 @@ window#waybar {
 /* ─────────────────────────────────────────────────────────────┤ tooltips ├───
 */
 tooltip {
-  
+  background: @bg_trans;
   border: 1.5px solid @borders;
+  border-radius: 0px;
 }
 
+
 tooltip label {
+  background: transparent;
   color: @text_color;
   margin: -1.5px 3px;
 }
@@ -51,45 +54,44 @@ tooltip label {
 }
 /* ───────────────────────────────────────────────────────────┤ workspaces ├───
 */
+
 #workspaces {
+  border: solid @color1;
+  border-width: 1 1.5px 1.5px 1.5px;
 }
 
 #workspaces button {
   color: @fg_color;
-  border: 1px hidden;
   box-shadow: none;
   border-radius: 0;
-  margin: 0px;
-  padding: 0 2px;
   transition: none;
 }
 
 #workspaces button:hover {
   color: @selected_fg_color;
-  background: @selected_bg_color;
+  background: @color1;
   text-shadow: none;
 }
 
 #workspaces button.focused {
   color: @selected_fg_color;
   background: @color4;
-  border: 1px hidden;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.2);
   box-shadow: 0 0 2px 1px rgba(0, 0, 0, 0.1);
-  margin: 0px;
-  padding: 0 6px;
 }
 /* ──────────────────────────────────────────────────────────┤ temperature ├───
 */
 #custom-temperature {
-  
+  border: solid @color2;
+  border-width: 1 0 1.5 1.5px;
   padding: 0 0 0 1px;
 }
 
 /* ───────────────────────────────────────────────────────────────┤ memory ├───
 */
 #memory {
-  
+  border: solid @color2;
+  border-width: 1 0 1.5 0px;
   padding: 0 0 0 1px;
 }
 
@@ -104,7 +106,8 @@ tooltip label {
 /* ──────────────────────────────────────────────────────────────────┤ cpu ├───
 */
 #cpu {
-  
+   border: solid @color2;
+  border-width: 1 0 1.5 0px; 
 }
 
 
@@ -112,73 +115,82 @@ tooltip label {
 */
 #custom-distro {
   color: @color4; 
-  margin: 0 -1px -2px 0;
+  margin: 0 -1px 0px 0;
   padding: 0 3px 0 4px;
   text-shadow: 0 0 1.5px rgba(0, 0, 0, 1);
+  border: solid @color2;
+  border-width: 1 0 1.5 0px;
 }
 
 
 /* ─────────────────────────────────────────────────────────────────┤ time ├───
 */
 #idle_inhibitor {
-  
+  border: solid @color2;
+  border-width: 1 0 1.5 0px; 
   padding: 0 0 0 4px;
 }
 
 #idle_inhibitor:hover {
   color: @selected_fg_color;
-  background: @selected_bg_color;
+  background: @color2;
 }
 
 #clock.time {
   background: @time;
   margin-left: -2px;
   padding: 0 3px 0 0;
+  border: solid @color2;
+  border-width: 1 0 1.5 0px; 
 }
 /* ─────────────────────────────────────────────────────────────────┤ date ├───
 */
 #clock.date {
-  
+  border: solid @color2;
+  border-width: 1 0 1.5 0px;  
 }
 
 #clock.date:hover {
   color: @selected_fg_color;
-  background: @selected_bg_color;
+  background: @color2;
 }
 /* ────────────────────────────────────────────────────────────────┤ wi-fi ├───
 */
 #custom-wifi {
-  
   padding: 0 8px 0 5px;
+  border: solid @color2;
+  border-width: 1 0 1.5 0px; 
 }
 
 #custom-wifi:hover {
   color: @selected_fg_color;
-  background: @selected_bg_color; 
+  background: @color2; 
 }
 
 /* ────────────────────────────────────────────────────────────┤ bluetooth ├───
 */
-#bluetooth {
-  
+#bluetooth { 
   padding-right: 5px;
+  border: solid @color2;
+  border-width: 1 0 1.5 0px; 
 }
 
 #bluetooth:hover {
   color: @selected_fg_color;
-  background: @selected_bg_color; 
+  background: @color2; 
 }
 
 /* ────────────────────────────────────────────────────────┤ system update ├───
 */
 #custom-update {
+  border: solid @color2;
+  border-width: 1 1.5 1.5 0px; 
   padding-right: 7px;
-  
 }
 
 #custom-update:hover {
   color: @selected_fg_color;
-  background: @selected_bg_color; 
+  background: @color2; 
 }
 /* ───────────────────────────────────────────────────────────┤ media info ├───
 */
@@ -195,12 +207,13 @@ tooltip label {
 /* ────────────────────────────────────────────────────────┤ output device ├───
 */
 #pulseaudio {
-  
+  border: solid @color5;
+  border-width: 1 0 1.5 1.5px; 
 }
 
 #pulseaudio:hover {
   color: @selected_fg_color;
-  background: @selected_bg_color;
+  background: @color5;
 }
 /* ─────────────────────────────────────────────────────────┤ notifications ├───
 */
@@ -217,7 +230,7 @@ tooltip label {
 #custom-notifications:hover {
   color: @selected_fg_color;
   border: 1px hidden;
-  background: @selected_bg_color;
+  background: @color5;
   text-shadow: none;
   box-shadow: none;
 }
@@ -226,17 +239,15 @@ tooltip label {
 
 #custom-wlsunset {
   color: @fg_color;
-  border-radius: 0;
-  border: 1px hidden;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
-  margin: 0px 3px 0px 0;
   padding: 0 2px 0 6px;
+  border: solid @color5;
+  border-width: 1 0 1.5 0px; 
 }
 
 #custom-wlsunset:hover {
   color: @selected_fg_color;
-  border: 1px hidden;
-  background: @selected_bg_color;
+  background: @color5;
   text-shadow: none;
   box-shadow: none;
 }
@@ -245,17 +256,16 @@ tooltip label {
 */
 #custom-power {
   color: @fg_color;
-  border-radius: 0;
-  border: 1px hidden;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
   margin: 0px 4px 0px 0;
   padding: 0 6px 0 9px;
+  border: solid @color5;
+  border-width: 1 1.5 1.5 0px; 
 }
 
 #custom-power:hover {
   color: @selected_fg_color;
-  border: 1px hidden;
-  background: @selected_bg_color;
+  background: @color5;
   text-shadow: none;
   box-shadow: none;
 }
