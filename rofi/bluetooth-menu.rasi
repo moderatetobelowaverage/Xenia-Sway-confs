@@ -89,7 +89,7 @@ element {
 element selected active,
 element selected normal {
   border-radius:            0px;
-  background-color:         @blue;
+  background-color:         @green;
   text-color:               @select-fg;
 }
 element-text {

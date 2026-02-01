@@ -61,7 +61,7 @@ element {
 }
 element selected.normal {
   border-radius:            0px;
-  background-color:         @blue;
+  background-color:         @mauve;
   text-color:               @select-fg;
 }
 element-text {
