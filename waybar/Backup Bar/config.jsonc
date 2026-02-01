@@ -10,72 +10,46 @@
   // ──────────────────────────────────────────────────────────┤ positions ├───
 
   "modules-left": [
-    "custom/theme",         // theme switcher
-    "custom/left1",
-
     "sway/workspaces",      // workspaces
-    "custom/right1",
 
-    "custom/paddw",
     "sway/window"           // window title
   ],
 
   "modules-center": [
-    "custom/paddc",
-    "custom/left2",
     "custom/temperature",   // temperature
 
-    "custom/left3",
     "memory",               // memory
 
-    "custom/left4",
     "cpu",                  // cpu
-    "custom/leftin1",
 
-    "custom/left5",
     "custom/distro",        // distro icon
-    "custom/right2",
 
-    "custom/rightin1",
+
     "idle_inhibitor",       // idle inhibitor
     "clock#time",           // time
-    "custom/right3",
 
     "clock#date",           // date
-    "custom/right4",
 
     "custom/wifi",          // wi-fi
     "bluetooth",            // bluetooth
-    "custom/update",        // system update
-    "custom/right5"
+    "custom/update"         // system update
   ],
 
   "modules-right": [
     "mpris",                // media info
 
-    "custom/left6",
     "pulseaudio",           // output device
 
-    "custom/left7",
-    "backlight",            // brightness
+    "custom/wlsunset",      // night light
 
-    "custom/left8",
+    "backlight/slider",     // brightness
+
+    "custom/notifications", // notifications
+
     "battery",              // battery
 
-    "custom/leftin2",
     "custom/power"          // power button
   ],
-
-  // ─────────────────────────────────────────────────────┤ theme switcher ├───
-
-  "custom/theme": {
-    //"exec": "~/.config/waybar/scripts/current-theme.sh",
-    //"return-type": "json",
-    //"format": " 󰤕 ",
-    //"on-click": "~/.config/waybar/scripts/theme-switcher.sh",
-    "min-length": 3,
-    "max-length": 3
-  },
 
   // ─────────────────────────────────────────────────────────┤ workspaces ├───
 
@@ -86,7 +60,8 @@
       "2": [],
       "3": [],
       "4": [],
-      "5": []
+      "5": [],
+      "6": []
     }
   },
 
@@ -107,6 +82,7 @@
       "~": "  Terminal",
       "zsh": "  Terminal",
       "kitty": "  Terminal",
+      "yazi": " File Manager",
 
       "tmux(.*)": 
         "<span foreground='#a6da95'> </span> Tmux",
@@ -364,7 +340,6 @@
     "min-length": 5,
     "max-length": 35
   },
-
   // ──────────────────────────────────────────────────────┤ output device ├───
 
   "pulseaudio": {
@@ -385,36 +360,77 @@
     "max-length": 6
   },
 
-  // ─────────────────────────────────────────────────────────┤ brightness ├───
-
-  "backlight": {
-    "format": "{icon} {percent}%",
-    "format-icons": ["", "", "", "", "", "", "", "", ""],
-    "tooltip": false,
-    "on-scroll-up": "~/.config/waybar/scripts/brightness-control.sh -o i",
-    "on-scroll-down": "~/.config/waybar/scripts/brightness-control.sh -o d",
-    "min-length": 6,
-    "max-length": 6
-  },
-
-  // ────────────────────────────────────────────────────────────┤ battery ├───
-
-  "battery": {
-    "states": {
-      "warning": 20,
-      "critical": 10
+  // ─────────────────────────────────────────────────────────┤ notifications ├───
+/*
+    "custom/notifications": {
+    "format": "{icon}",
+    "format-icons": {
+      "default": "󰂚 ",
+      "do-not-disturb": "󰂛 "
     },
-
-    "format": "{icon} {capacity}%",
-    "format-icons": ["󰂎", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
-    "format-charging": " {capacity}%",
-
-    "tooltip-format": "Discharging: {time}",
-    "tooltip-format-charging": "Charging: {time}",
-    "interval": 1,
-    "min-length": 6,
-    "max-length": 6
+    "tooltip": false,
+    "return-type": "json",
+    "on-click": "~/.config/waybar/scripts/notifications.sh"
   },
+*/
+  // ────────────────────────────────────────────────────────┤ battery ├───
+ "battery": {
+		// "bat":
+		// "adapter":
+		// "design-capacity":
+		// "full-at":
+		// "interval":
+		"states": {
+			"warning": 20,
+			"critical": 10
+		},
+		"format": "{icon} {capacity}%",
+		"format-time": "{H}h {M}min",
+		"format-icons": [
+			"󰂎", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"
+		],
+		"format-charging": "󰉁 {capacity}%",
+		"min-length": 7,
+		"max-length": 7,
+		// "align":
+		// "justify":
+		// "rotate":
+		"on-click": "~/.config/waybar/scripts/power-settings.sh",
+		// "on-click-middle":
+		// "on-click-right":
+		// "on-update":
+		// "on-scroll-up":
+		// "on-scroll-down":
+		// "smooth-scrolling-threshold":
+		// "tooltip":
+		"tooltip-format": "<b>Discharging</b>: {time}",
+		"tooltip-format-charging": "<b>Charging</b>: {time}",
+		// "weighted-average":
+		// "bat-compatibility":
+		// "menu":
+		// "menu-file":
+		// "menu-actions":
+		// "expand":
+		"events": {
+			"on-discharging-warning": "notify-send 'Battery Low (20%)' -u critical -i 'battery-020' -h string:x-canonical-private-synchronous:battery",
+			"on-discharging-critical": "notify-send 'Battery Critical (10%)' -u critical -i 'battery-010' -h string:x-canonical-private-synchronous:battery",
+			"on-charging-100": "notify-send 'Battery Full (100%)' -i 'battery-100-charged' -h string:x-canonical-private-synchronous:battery"
+		}
+	},
+  // ─────────────────────────────────────────────────────────┤ night light ├───
+ "custom/wlsunset":{
+    "format": " ",
+    "on-click": "~/.config/waybar/scripts/sunONOFF.sh"
+  },
+
+  // ─────────────────────────────────────────────────────────┤ backlight ├───
+
+ "backlight/slider": {
+    "min": 0,
+    "max": 100,
+    "orientation": "horizontal",
+    "device": "intel_backlight"
+},
 
   // ───────────────────────────────────────────────────────┤ power button ├───
 
@@ -426,90 +442,4 @@
   },
 
   // ────────────────────────────────────────────────────────────┤ padding ├───
-
-  "custom/paddw": {
-    "format": " ",
-    "tooltip": false
-  },
-
-  "custom/paddc": {
-    "format": " ",
-    "tooltip": false
-  },
-
-  // ────────────────────────────────────────────────────────┤ left arrows ├───
-
-  "custom/left1": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/left2": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/left3": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/left4": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/left5": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/left6": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/left7": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/left8": {
-    "format": "",
-    "tooltip": false
-  },
-
-  // ───────────────────────────────────────────────────────┤ right arrows ├───
-
-  "custom/right1": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/right2": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/right3": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/right4": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/right5": {
-    "format": "",
-    "tooltip": false
-  },
-
-  // ───────────────────────────────────────────────────────┤ left inverse ├───
-
-  "custom/leftin1": {
-    "format": "",
-    "tooltip": false
-  },
-  "custom/leftin2": {
-    "format": "",
-    "tooltip": false
-  },
-
-  // ──────────────────────────────────────────────────────┤ right inverse ├───
-
-  "custom/rightin1": {
-    "format": "",
-    "tooltip": false
-  }
 }

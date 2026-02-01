@@ -52,16 +52,29 @@ tooltip label {
   color: @fg_color;
   padding: 0 4px;
 }
+/* ─────────────────────────────────────────────────────────────────┤ date ├───
+*/
+#clock.date {
+  color: @color1;
+  border: solid @color1;
+  border-width: 1 1.5 1.5 1.5px;  
+}
+
+#clock.date:hover {
+  color: @selected_fg_color;
+  background: @color1;
+}
 /* ───────────────────────────────────────────────────────────┤ workspaces ├───
 */
 
 #workspaces {
   border: solid @color1;
-  border-width: 1 1.5px 1.5px 1.5px;
+  border-width: 1px 1.5 1.5 1.5;
+  margin-left: 8px;
 }
 
 #workspaces button {
-  color: @fg_color;
+  color: @color1;
   box-shadow: none;
   border-radius: 0;
   transition: none;
@@ -69,30 +82,33 @@ tooltip label {
 
 #workspaces button:hover {
   color: @selected_fg_color;
-  background: @color1;
+  background: @color9;
   text-shadow: none;
 }
 
 #workspaces button.focused {
   color: @selected_fg_color;
-  background: @color4;
+  background: @color1;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.2);
   box-shadow: 0 0 2px 1px rgba(0, 0, 0, 0.1);
 }
 /* ──────────────────────────────────────────────────────────┤ temperature ├───
 */
 #custom-temperature {
+  color: @color2;
   border: solid @color2;
   border-width: 1 0 1.5 1.5px;
-  padding: 0 0 0 1px;
+  padding: 0 0 0 8px;
+  margin: 0 0 0 9px; /*recenters icon*/
 }
 
 /* ───────────────────────────────────────────────────────────────┤ memory ├───
 */
 #memory {
+  color: @color2;
   border: solid @color2;
   border-width: 1 0 1.5 0px;
-  padding: 0 0 0 1px;
+  padding: 0 0 0 8px;
 }
 
 #memory.warning {
@@ -106,29 +122,34 @@ tooltip label {
 /* ──────────────────────────────────────────────────────────────────┤ cpu ├───
 */
 #cpu {
-   border: solid @color2;
-  border-width: 1 0 1.5 0px; 
+  color: @color2;
+  border: solid @color2;
+  border-width: 1 1.5 1.5 0px; 
 }
 
 
 /* ──────────────────────────────────────────────────────────┤ distro icon ├───
 */
 #custom-distro {
-  color: @color4; 
-  margin: 0 -1px 0px 0;
-  padding: 0 3px 0 4px;
+  color: @color2; 
+  margin: 0 8px 0px 8;
+  padding: 0 3px 0 5px;
   text-shadow: 0 0 1.5px rgba(0, 0, 0, 1);
-  border: solid @color2;
-  border-width: 1 0 1.5 0px;
+
+}
+#custom-distro:hover {
+  color: @selected_fg_color;
+  background: @color2;
 }
 
 
 /* ─────────────────────────────────────────────────────────────────┤ time ├───
 */
 #idle_inhibitor {
+  color: @color2;
   border: solid @color2;
-  border-width: 1 0 1.5 0px; 
-  padding: 0 0 0 4px;
+  border-width: 1 0 1.5 1.5px; 
+  padding: 0 4 0 4px;
 }
 
 #idle_inhibitor:hover {
@@ -136,27 +157,10 @@ tooltip label {
   background: @color2;
 }
 
-#clock.time {
-  background: @time;
-  margin-left: -2px;
-  padding: 0 3px 0 0;
-  border: solid @color2;
-  border-width: 1 0 1.5 0px; 
-}
-/* ─────────────────────────────────────────────────────────────────┤ date ├───
-*/
-#clock.date {
-  border: solid @color2;
-  border-width: 1 0 1.5 0px;  
-}
-
-#clock.date:hover {
-  color: @selected_fg_color;
-  background: @color2;
-}
 /* ────────────────────────────────────────────────────────────────┤ wi-fi ├───
 */
 #custom-wifi {
+  color: @color2;
   padding: 0 8px 0 5px;
   border: solid @color2;
   border-width: 1 0 1.5 0px; 
@@ -169,7 +173,8 @@ tooltip label {
 
 /* ────────────────────────────────────────────────────────────┤ bluetooth ├───
 */
-#bluetooth { 
+#bluetooth {
+  color: @color2;
   padding-right: 5px;
   border: solid @color2;
   border-width: 1 0 1.5 0px; 
@@ -183,6 +188,7 @@ tooltip label {
 /* ────────────────────────────────────────────────────────┤ system update ├───
 */
 #custom-update {
+  color: @color2;
   border: solid @color2;
   border-width: 1 1.5 1.5 0px; 
   padding-right: 7px;
@@ -207,6 +213,7 @@ tooltip label {
 /* ────────────────────────────────────────────────────────┤ output device ├───
 */
 #pulseaudio {
+  color: @color5;
   border: solid @color5;
   border-width: 1 0 1.5 1.5px; 
 }
@@ -238,7 +245,7 @@ tooltip label {
 */
 
 #custom-wlsunset {
-  color: @fg_color;
+  color: @color5;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
   padding: 0 2px 0 6px;
   border: solid @color5;
@@ -252,15 +259,59 @@ tooltip label {
   box-shadow: none;
 }
 
+/* ─────────────────────────────────────────────────────────┤ backlight ├───
+*/
+
+#backlight-slider {
+  border: solid @color5;
+  border-width: 1 0 1.5 0px;
+  padding: 0px 1px;
+}
+
+#backlight-slider slider {
+  min-height: 0px;
+  min-width: 0px;
+  opacity: 0;
+  background-image: none;
+  box-shadow: none;
+  background: none;
+}
+#backlight-slider trough {
+  min-height: 10px;
+  min-width: 80px;
+  border-radius: 0px;
+  border: 1px solid @color13;
+  background: @bg_color;
+}
+#backlight-slider highlight {
+  min-width: 10px;
+  border-radius: 0px;
+  background: @color5;
+}
+
+/* ─────────────────────────────────────────────────────────┤ battery ├───
+*/
+
+#battery {
+	color: @color5;
+  border: solid @color5;
+  border-width: 1 1.5 1.5 0px;
+  padding: 0 2 0 8px;
+}
+#battery:hover {
+  color: @selected_fg_color;
+	background: @color5;
+}
+
 /* ─────────────────────────────────────────────────────────┤ power button ├───
 */
 #custom-power {
-  color: @fg_color;
+  color: @color5;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
-  margin: 0px 4px 0px 0;
+  margin: 0px 4px 0px 8;
   padding: 0 6px 0 9px;
   border: solid @color5;
-  border-width: 1 1.5 1.5 0px; 
+  border-width: 1 1.5 1.5 1.5px; 
 }
 
 #custom-power:hover {
@@ -283,7 +334,7 @@ tooltip label {
 
 * {
   font-family: "JetBrainsMono Nerd Font";
-  font-size: 10px;
+  font-size: 15px;
   font-weight: bold;
 }
 
@@ -312,8 +363,7 @@ tooltip label,
 /* ───────────────────────────────────────────────────────────┤ night light ├───
 */
 #custom-wlsunset {
-  font-size: 13;
-  font-weight: bold;
+
 }
 /* ─────────────────────────────────────────────────────────┤ power button ├───
 */

@@ -1,76 +1,70 @@
-/* tokyonight_storm */
+/* GTK NAMED COLORS
+   ----------------
+   use responsibly! */
 
-@define-color black           #1d202f;
-@define-color red             #f7768e;
-@define-color green           #9ece6a;
-@define-color yellow          #e0af68;
-@define-color blue            #7aa2f7;
-@define-color magenta         #bb9af7;
-@define-color cyan            #7dcfff;
-@define-color white           #a9b1d6;
-/*@define-color rosewater       #;
-@define-color flamingo        #;
-@define-color pink            #;
-@define-color mauve           #;
-@define-color maroon          #;
-@define-color peach           #;
-@define-color teal            #;
-@define-color sky             #;
-@define-color sapphire        #;
-@define-color lavender        #;*/
-@define-color text            #c0caf5;
-/*@define-color subtext1        #;
-@define-color subtext0        #;*/
-@define-color overlay2        #7aa2f7;
-/*@define-color overlay1        #;
-@define-color overlay0        #;
-@define-color surface2        #;
-@define-color surface1        #;*/
-@define-color surface0        #414868;
-@define-color base            #24283b;
-@define-color mantle          #414868;
-@define-color crust           #24283b;
+/* widget text/foreground color */
+@define-color fg_color #c0caf5;
+/* text color for entries, views and content in general */
+@define-color text_color #c0caf5;
+/* widget base background color */
+@define-color bg_color #24283b;
 
-/* 
-  bg - background
-  fg - foreground
-  br - border
-*/
+@define-color bg_trans rgba(36, 40, 59, 0.9);
+/* text widgets and the like base background color */
+@define-color base_color #24283b;
+/* base background color of selections */
+@define-color selected_bg_color #a9b1d6;
+/* text/foreground color of selections */
+@define-color selected_fg_color rgba(0, 0, 0, 0.87);
+/* base background color of insensitive widgets */
+@define-color insensitive_bg_color #24283b;
+/* text foreground color of insensitive widgets */
+@define-color insensitive_fg_color rgba(191, 202, 245, 0.5);
+/* insensitive text widgets and the like base background color>*/
+@define-color insensitive_base_color #1d202f;
+/* widget text/foreground color on backdrop windows */
+@define-color unfocused_fg_color #c0caf5;
+/* text color for entries, views and content in general on b> */
+@define-color unfocused_text_color #c0caf5;
+/* widget base background color on backdrop windows */
+@define-color unfocused_bg_color #24283b;
+/* text widgets and the like base background color on backdrop*/
+@define-color unfocused_base_color #24283b;
+/* base background color of selections on backdrop windows */
+@define-color unfocused_selected_bg_color #a9b1d6;
+/* text/foreground color of selections on backdrop windows */
+@define-color unfocused_selected_fg_color rgba(0, 0, 0, 0.12);
+/* insensitive color on backdrop windows */
+@define-color insensitive_color rgba(191, 202, 245, 0.5);
+/* widgets main borders color */
+@define-color borders rgba(191, 202, 245, 0.7);
+/* widgets main borders color on backdrop windows */
+@define-color unfocused_borders rgba(191, 202, 245, 0.12);
+/* these are pretty self explicative */
+@define-color warning_color #e0af68;
+@define-color error_color #f7768e;
+@define-color success_color #9ece6a;
 
-/* Main Colors */
+/*normal*/
+@define-color color0 #1d202f;
+@define-color color1 #f7768e;
+@define-color color2 #9ece6a;
+@define-color color3 #e0af68;
+@define-color color4 #7aa2f7;
+@define-color color5 #bb9af7;
+@define-color color6 #7dcfff;
+@define-color color7 #a9b1d6;
 
-@define-color shadow          shade(@crust, 0.5);
-@define-color main-fg         @text;
-@define-color main-bg         @crust;
-@define-color main-br         @text;
+/*bright*/
+@define-color color8  #414868;
+@define-color color9  #ff899d;
+@define-color color10 #9fe044;
+@define-color color11 #faba4a;
+@define-color color12 #8db0ff;
+@define-color color13 #c7a9ff;
+@define-color color14 #a4daff;
+@define-color color15 #c0caf5;
 
-@define-color active-bg       @overlay2;
-@define-color active-fg       @crust;
-
-@define-color hover-bg        @black;
-@define-color hover-fg        alpha(@text, 0.75);
-
-/* Module Colors */
-
-@define-color module-fg       @text;
-@define-color workspaces      @mantle;
-
-@define-color temperature     @mantle;
-@define-color memory          @base;
-@define-color cpu             @surface0;
-@define-color distro-fg       @black;
-@define-color distro-bg       @overlay2;
-@define-color time            @surface0;
-@define-color date            @base;
-@define-color tray            @mantle;
-
-@define-color pulseaudio      @mantle;
-@define-color backlight       @base;
-@define-color battery         @surface0;
-@define-color power           @overlay2;
-
-/* State Colors */
-
-@define-color warning         @yellow;
-@define-color critical        @red;
-@define-color charging        @text;
+/*extended colors*/
+@define-color color16 #ff9e64;
+@define-color color17 #db4b4b;

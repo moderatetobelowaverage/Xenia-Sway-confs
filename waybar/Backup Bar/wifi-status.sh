@@ -173,4 +173,4 @@ else
 fi
 
 # Module and tooltip
-echo "{\"text\": \"${signal}\", \"tooltip\": \"${tooltip}\"}"
+echo "{\"text\": \"${icon}\", \"tooltip\": \"${tooltip}\"}"

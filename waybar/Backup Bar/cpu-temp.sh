@@ -55,9 +55,9 @@ thermo_icon=$(get_temperature_icon "$temp")
 
 # high temp warning
 if [ "$temp" == "--" ] || [ "$temp" -ge 80 ]; then
-  text_output="<span color='#f38ba8'>${temp}°C</span>"
+  text_output="<span color='#f38ba8'>${thermo_icon} ${temp}°C</span>"
 else
-  text_output="${temp}°C"
+  text_output="${thermo_icon} ${temp}°C"
 fi
 
 tooltip=":: ${model}\n"
